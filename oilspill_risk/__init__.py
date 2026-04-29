@@ -1,5 +1,6 @@
 """Reusable modules for coastal oil-spill risk screening."""
 
+from .density_rasters import MeanRasterAggregator, RasterGroup
 from .hotspots import HotspotConfig, RunOptions, run_hotspot_extraction
 from .oscar import (
     OscarDownloadConfig,
@@ -23,7 +24,9 @@ __all__ = [
     "CurrentField",
     "HotspotConfig",
     "HotspotSource",
+    "MeanRasterAggregator",
     "OscarDownloadConfig",
+    "RasterGroup",
     "RunOptions",
     "SimulationConfig",
     "StudyArea",

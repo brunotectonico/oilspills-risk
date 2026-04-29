@@ -22,9 +22,15 @@ def parse_args() -> argparse.Namespace:
         help="Monthly summary output CSV name",
     )
     parser.add_argument(
-        "--hotspot-raster-output",
+        "--mean-raster-dir",
         default=None,
-        help="Optional GeoTIFF output with mean density on hotspot pixels",
+        help="Optional output directory for mean density rasters",
+    )
+    parser.add_argument(
+        "--mean-raster-frequency",
+        default="monthly",
+        choices=["monthly", "seasonal"],
+        help="Grouping of mean density rasters when --mean-raster-dir is enabled",
     )
     parser.add_argument(
         "--season-start-month",
@@ -51,7 +57,8 @@ def main() -> None:
         zip_pattern=args.pattern,
         output_csv=args.output,
         output_summary_csv=args.summary_output,
-        output_hotspot_raster=args.hotspot_raster_output,
+        mean_raster_dir=args.mean_raster_dir,
+        mean_raster_frequency=args.mean_raster_frequency,
         start=args.start,
         limit=args.limit,
         season_start_month=args.season_start_month,

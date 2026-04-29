@@ -15,6 +15,8 @@ import rasterio
 from rasterio.io import MemoryFile
 from sklearn.cluster import DBSCAN
 
+from .density_rasters import MeanRasterAggregator, RasterGroup
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -40,7 +42,8 @@ class RunOptions:
     zip_pattern: str = "*Tankers.zip"
     output_csv: str = "gmtds_tanker_hotspots_multi.csv"
     output_summary_csv: str = "gmtds_tanker_hotspots_monthly_summary.csv"
-    output_hotspot_raster: str | None = None
+    mean_raster_dir: str | None = None
+    mean_raster_frequency: str = "monthly"
     limit: int | None = None
     start: int = 0
     season_start_month: int | None = None
@@ -90,6 +93,14 @@ def month_in_selected_window(month: int, options: RunOptions) -> bool:
     return month in allowed
 
 
+def density_group(year: str, month: str, options: RunOptions) -> RasterGroup:
+    """Return grouping key for mean density raster output."""
+    if options.mean_raster_frequency == "seasonal":
+        pid = period_id(year, month, options)
+        return RasterGroup(key=pid, filename=f"mean_density_{pid}.tif")
+    return RasterGroup(key=f"{year}-{month}", filename=f"mean_density_{year}-{month}.tif")
+
+
 def pixel_centers(transform: rasterio.Affine, shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
     """Create longitude/latitude arrays for raster cell centers."""
     height, width = shape
@@ -117,11 +128,11 @@ def extract_hotspots_from_raster(
     source_file: str,
     cfg: HotspotConfig,
     options: RunOptions,
-) -> tuple[list[dict[str, float | int | str]], np.ndarray]:
+) -> list[dict[str, float | int | str]]:
     """Detect and cluster high-density pixels from a single monthly raster."""
     valid = density[~np.isnan(density)]
     if valid.size == 0:
-        return [], np.zeros_like(density)
+        return []
 
     threshold = np.percentile(valid, cfg.percentile_threshold)
     high_mask = density > threshold
@@ -137,7 +148,7 @@ def extract_hotspots_from_raster(
     candidate_mask = high_mask & region_mask & ~np.isnan(density)
     rows, cols = np.where(candidate_mask)
     if rows.size < cfg.min_high_pixels:
-        return [], np.where(candidate_mask, density, 0.0)
+        return []
 
     coords = np.column_stack((lon[rows, cols], lat[rows, cols]))
     densities = density[rows, cols]
@@ -169,8 +180,7 @@ def extract_hotspots_from_raster(
             }
         )
 
-    hotspot_density = np.where(candidate_mask, density, 0.0)
-    return hotspots, hotspot_density
+    return hotspots
 
 
 def iter_tifs(zip_file: zipfile.ZipFile) -> Iterable[str]:
@@ -183,15 +193,13 @@ def process_zip(
     zip_path: Path,
     cfg: HotspotConfig,
     options: RunOptions,
-) -> tuple[list[dict[str, float | int | str]], np.ndarray | None, np.ndarray | None, rasterio.Affine | None]:
+    raster_agg: MeanRasterAggregator | None,
+) -> list[dict[str, float | int | str]]:
     """Process all TIFFs in a single ZIP archive."""
     year = parse_year(zip_path.stem)
     LOGGER.info("Processing %s (%s)", zip_path.name, year)
 
     hotspots: list[dict[str, float | int | str]] = []
-    density_sum: np.ndarray | None = None
-    density_count: np.ndarray | None = None
-    transform: rasterio.Affine | None = None
 
     with zipfile.ZipFile(zip_path, "r") as zip_file:
         tif_names = list(iter_tifs(zip_file))
@@ -205,67 +213,28 @@ def process_zip(
 
             try:
                 density, transform = read_density_from_zip(zip_file, tif_name)
-                raster_hotspots, hotspot_density = extract_hotspots_from_raster(
-                    density=density,
-                    transform=transform,
-                    year=year,
-                    month=month,
-                    source_file=tif_name,
-                    cfg=cfg,
-                    options=options,
+                hotspots.extend(
+                    extract_hotspots_from_raster(
+                        density=density,
+                        transform=transform,
+                        year=year,
+                        month=month,
+                        source_file=tif_name,
+                        cfg=cfg,
+                        options=options,
+                    )
                 )
-                hotspots.extend(raster_hotspots)
 
-                if options.output_hotspot_raster:
-                    if density_sum is None:
-                        density_sum = np.zeros_like(density, dtype=float)
-                        density_count = np.zeros_like(density, dtype=float)
-                    mask = hotspot_density > 0
-                    density_sum[mask] += hotspot_density[mask]
-                    density_count[mask] += 1
+                if raster_agg is not None:
+                    raster_agg.add(density_group(year, month, options), density=density, transform=transform)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("Error processing %s in %s: %s", tif_name, zip_path.name, exc)
 
-    return hotspots, density_sum, density_count, transform
+    return hotspots
 
 
-def _write_hotspot_mean_raster(
-    options: RunOptions,
-    density_sum: np.ndarray,
-    density_count: np.ndarray,
-    transform: rasterio.Affine,
-) -> None:
-    """Write optional raster with mean traffic density on hotspot pixels."""
-    if not options.output_hotspot_raster:
-        return
-
-    out_path = options.data_dir / options.output_hotspot_raster
-    mean_density = np.where(density_count > 0, density_sum / density_count, np.nan).astype("float32")
-
-    with rasterio.open(
-        out_path,
-        "w",
-        driver="GTiff",
-        height=mean_density.shape[0],
-        width=mean_density.shape[1],
-        count=1,
-        dtype="float32",
-        crs="EPSG:4326",
-        transform=transform,
-        nodata=np.nan,
-    ) as dst:
-        dst.write(mean_density, 1)
-    LOGGER.info("Saved hotspot mean-density raster to %s", out_path)
-
-
-def save_outputs(
-    hotspots: list[dict[str, float | int | str]],
-    options: RunOptions,
-    density_sum: np.ndarray | None,
-    density_count: np.ndarray | None,
-    transform: rasterio.Affine | None,
-) -> None:
-    """Write detailed, summary, and optional raster outputs."""
+def save_outputs(hotspots: list[dict[str, float | int | str]], options: RunOptions) -> None:
+    """Write detailed and summary CSV outputs."""
     output_path = options.data_dir / options.output_csv
     summary_path = options.data_dir / options.output_summary_csv
 
@@ -297,9 +266,6 @@ def save_outputs(
     summary.to_csv(summary_path, index=False)
     LOGGER.info("Saved monthly summary to %s", summary_path)
 
-    if options.output_hotspot_raster and density_sum is not None and density_count is not None and transform is not None:
-        _write_hotspot_mean_raster(options, density_sum, density_count, transform)
-
 
 def run_hotspot_extraction(options: RunOptions, cfg: HotspotConfig) -> None:
     """Main processing entrypoint for hotspot extraction."""
@@ -313,21 +279,15 @@ def run_hotspot_extraction(options: RunOptions, cfg: HotspotConfig) -> None:
     selected = zip_files[options.start:end]
     LOGGER.info("Selected %d ZIP files (from %d total)", len(selected), len(zip_files))
 
+    raster_agg = MeanRasterAggregator() if options.mean_raster_dir else None
+
     all_hotspots: list[dict[str, float | int | str]] = []
-    density_sum_total: np.ndarray | None = None
-    density_count_total: np.ndarray | None = None
-    transform: rasterio.Affine | None = None
-
     for zip_path in selected:
-        hotspots, density_sum, density_count, local_transform = process_zip(zip_path, cfg, options)
-        all_hotspots.extend(hotspots)
+        all_hotspots.extend(process_zip(zip_path, cfg, options, raster_agg=raster_agg))
 
-        if options.output_hotspot_raster and density_sum is not None and density_count is not None:
-            if density_sum_total is None:
-                density_sum_total = np.zeros_like(density_sum)
-                density_count_total = np.zeros_like(density_count)
-                transform = local_transform
-            density_sum_total += density_sum
-            density_count_total += density_count
+    save_outputs(all_hotspots, options)
 
-    save_outputs(all_hotspots, options, density_sum_total, density_count_total, transform)
+    if raster_agg is not None:
+        out_dir = options.data_dir / options.mean_raster_dir
+        written = raster_agg.write_all(out_dir)
+        LOGGER.info("Saved %d mean density raster(s) in %s", len(written), out_dir)

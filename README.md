@@ -12,12 +12,15 @@ This repository provides a modular coastal oil-spill risk screening workflow for
    - Clusters hotspot candidates with DBSCAN.
    - Exports detailed and monthly summary CSV outputs.
 
-2. **Optional hotspot raster output**
-   - Can save a GeoTIFF of **mean traffic density over hotspot pixels** using `--hotspot-raster-output`.
+2. **Optional mean density raster outputs (all pixels)**
+   - Can save GeoTIFFs with mean density computed from **all valid raster pixels**, not only hotspot pixels.
+   - Supports output frequency:
+     - `monthly`: one mean raster per `YYYY-MM`
+     - `seasonal`: one mean raster per seasonal window (e.g., 3-month period)
 
 3. **Optional seasonal window (e.g., 3 months)**
-   - You can limit analysis to a period with `--season-start-month` and `--season-length-months`.
-   - Summary output includes a `period_id` to keep those analyses separate.
+   - You can limit hotspot analysis to a period with `--season-start-month` and `--season-length-months`.
+   - Summary output includes a `period_id` to keep analyses separated.
 
 4. **Reusable trajectory/risk module (simple version)**
    - Particle advection + random walk diffusion.
@@ -34,7 +37,9 @@ This repository provides a modular coastal oil-spill risk screening workflow for
 - `density_hotspots.py`  
   CLI wrapper for hotspot extraction.
 - `oilspill_risk/hotspots.py`  
-  Reusable hotspot detection, seasonal filtering, CSV export, and optional hotspot mean-density raster.
+  Reusable hotspot detection and outputs.
+- `oilspill_risk/density_rasters.py`  
+  Separate mean-density raster aggregation module.
 - `oilspill_risk/trajectory.py`  
   Reusable trajectory simulation and coastal risk scoring primitives.
 - `oilspill_risk/oscar.py`  
@@ -47,7 +52,8 @@ This repository provides a modular coastal oil-spill risk screening workflow for
 ```bash
 python density_hotspots.py /path/to/gmtds_data \
   --pattern "*Tankers.zip" \
-  --hotspot-raster-output hotspot_mean_density.tif \
+  --mean-raster-dir mean_density_rasters \
+  --mean-raster-frequency seasonal \
   --season-start-month 1 \
   --season-length-months 3
 ```
