@@ -58,6 +58,33 @@ python density_hotspots.py /path/to/gmtds_data \
   --season-length-months 3
 ```
 
+
+## Secure Earthdata auth with PO.DAAC downloader
+
+For the `podaac-data-downloader` mode (from `podaac/data-subscriber`), avoid hardcoding credentials in scripts.
+
+Recommended pattern:
+- Set environment variables `EARTHDATA_USERNAME` and `EARTHDATA_PASSWORD` in your shell/session.
+- Call `run_podaac_downloader(...)`; the helper writes a local netrc with restricted permissions and runs the CLI.
+
+```python
+from datetime import date
+from pathlib import Path
+
+from oilspill_risk.oscar import StudyArea, run_podaac_downloader
+
+bbox = StudyArea(lon_min=40.0, lon_max=45.0, lat_min=10.0, lat_max=14.0)
+result = run_podaac_downloader(
+    collection="OSCAR_L4_OC_FINAL_V2.0",
+    output_dir=Path("oscar_downloads"),
+    start_date=date(2020, 1, 1),
+    end_date=date(2020, 3, 31),
+    bbox=bbox,
+    dry_run=True,
+)
+print(result.stdout)
+```
+
 ## Example OSCAR period downloads
 
 ```python
