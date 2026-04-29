@@ -98,7 +98,8 @@ def density_group(year: str, month: str, options: RunOptions) -> RasterGroup:
     if options.mean_raster_frequency == "seasonal":
         pid = period_id(year, month, options)
         return RasterGroup(key=pid, filename=f"mean_density_{pid}.tif")
-    return RasterGroup(key=f"{year}-{month}", filename=f"mean_density_{year}-{month}.tif")
+    month_key = f"M{int(month):02d}"
+    return RasterGroup(key=month_key, filename=f"mean_density_{month_key}.tif")
 
 
 def pixel_centers(transform: rasterio.Affine, shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:

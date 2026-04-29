@@ -15,7 +15,7 @@ This repository provides a modular coastal oil-spill risk screening workflow for
 2. **Optional mean density raster outputs (all pixels)**
    - Can save GeoTIFFs with mean density computed from **all valid raster pixels**, not only hotspot pixels.
    - Supports output frequency:
-     - `monthly`: one mean raster per `YYYY-MM`
+     - `monthly`: 12 mean rasters (`M01`..`M12`) aggregated across all analyzed years
      - `seasonal`: one mean raster per seasonal window (e.g., 3-month period)
 
 3. **Optional seasonal window (e.g., 3 months)**
