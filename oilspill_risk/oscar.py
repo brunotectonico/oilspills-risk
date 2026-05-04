@@ -6,7 +6,7 @@ import os
 import stat
 import subprocess
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
