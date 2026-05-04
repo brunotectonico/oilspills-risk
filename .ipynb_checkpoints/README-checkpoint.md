@@ -100,29 +100,20 @@ from oilspill_risk.oscar import (
 
 area = infer_study_area_from_hotspots(Path("gmtds_tanker_hotspots_multi.csv"), pad_deg=0.7)
 periods = seasonal_periods(
-    start_date=datetime(2019, 1, 1, 0, 0, 0).strftime('%Y-%m-%dT%H:%M:%SZ'), #dates should be strings in YYYYMMDDhhmmssZ format
-    end_date=datetime(2021, 12, 31, 23, 59, 59).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    start_date=date(2019, 1, 1),
+    end_date=date(2021, 12, 31),
     season_start_month=1,
     season_length_months=3,
 )
 
 cfg = OscarDownloadConfig(
     output_dir=Path("oscar_subsets"),
-    podaac_collection="OSCAR_L4_OC_FINAL_V2.0",
+    base_griddap_url="https://your-erddap-server/erddap/griddap",
+    dataset_id="oscar_dataset_id",
 )
 
-downloaded = download_oscar_for_periods(cfg, area, periods, standardize=True)
+downloaded = download_oscar_for_periods(cfg, area, periods)
 ```
-
-
-### NetCDF standardization for GIS and trajectory
-
-If OSCAR files are in `0..360` longitude and appear twisted in GIS:
-- use `standardize_oscar_uv_netcdf(...)` to normalize longitude to `-180..180`,
-- clip to your hotspot study area,
-- and keep only `u` and `v` variables for trajectory runs.
-
-You can then load currents directly into the trajectory module with `current_field_from_netcdf(...)`.
 
 ## Still to complete
 
