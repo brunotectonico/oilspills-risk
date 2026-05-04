@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
+import xarray as xr
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,58 @@ class CurrentField:
         xi = np.abs(self.lon[None, :] - x[:, None]).argmin(axis=1)
         yi = np.abs(self.lat[None, :] - y[:, None]).argmin(axis=1)
         return self.u[yi, xi], self.v[yi, xi]
+
+
+def current_field_from_netcdf(
+    nc_path: Path,
+    *,
+    u_var: str = "u",
+    v_var: str = "v",
+    lon_name: str = "lon",
+    lat_name: str = "lat",
+    time_name: str = "time",
+    time_index: int | None = None,
+    average_over_time: bool = True,
+    input_units: str = "m/s",
+) -> CurrentField:
+    """Build a CurrentField from u/v variables in NetCDF.
+
+    The function accepts u/v on (time, lat, lon) or (lat, lon).
+    If units are m/s, conversion to deg/hour is approximated with local latitude.
+    """
+    ds = xr.open_dataset(nc_path)
+    u_da = ds[u_var]
+    v_da = ds[v_var]
+
+    if time_name in u_da.dims:
+        if time_index is not None:
+            u_slice = u_da.isel({time_name: time_index})
+            v_slice = v_da.isel({time_name: time_index})
+        elif average_over_time:
+            u_slice = u_da.mean(dim=time_name)
+            v_slice = v_da.mean(dim=time_name)
+        else:
+            u_slice = u_da.isel({time_name: 0})
+            v_slice = v_da.isel({time_name: 0})
+    else:
+        u_slice = u_da
+        v_slice = v_da
+
+    lon = u_slice[lon_name].values.astype(float)
+    lat = u_slice[lat_name].values.astype(float)
+    u = u_slice.values.astype(float)
+    v = v_slice.values.astype(float)
+
+    if input_units == "m/s":
+        m_per_deg_lat = 111_320.0
+        lat_rad = np.deg2rad(lat)
+        m_per_deg_lon = np.maximum(1e-6, m_per_deg_lat * np.cos(lat_rad))
+
+        v = v * 3600.0 / m_per_deg_lat
+        u = u * 3600.0 / m_per_deg_lon[:, None]
+
+    ds.close()
+    return CurrentField(lon=lon, lat=lat, u=u, v=v)
 
 
 def _mass_survival_fraction(hours: int, daily_mass_loss_fraction: float) -> float:

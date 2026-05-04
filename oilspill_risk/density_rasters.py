@@ -48,11 +48,6 @@ class MeanRasterAggregator:
         written: list[Path] = []
 
         for key in sorted(self._sum):
-            # mean_density = np.where(
-            #     self._count[key] > 0,
-            #     self._sum[key] / self._count[key],
-            #     np.nan,
-            # ).astype("float32")
             count = self._count[key]
             if not np.any(count > 0):
                 LOGGER.warning("Skipping empty group %s", key)
