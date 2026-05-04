@@ -12,6 +12,7 @@ from urllib.parse import quote
 from urllib.request import urlretrieve
 
 import pandas as pd
+import xarray as xr
 
 
 @dataclass(frozen=True)
@@ -85,7 +86,7 @@ def build_podaac_downloader_cmd(
     ]
 
     if start_date is not None:
-        cmd += ["-sd", start_date]
+        cmd += ["-sd", start_date] #Assumes date already in string format (based in init.py)
     if end_date is not None:
         cmd += ["-ed", end_date]
     if bbox is not None:
@@ -124,7 +125,7 @@ def run_podaac_downloader(
 
     env = os.environ.copy()
     if username and password:
-        resolved_netrc = netrc_path or (Path.home() / (".netrc" if os.name == "nt" else ".netrc"))
+        resolved_netrc = netrc_path or (Path.home() / (".netrc" if os.name == "nt" else ".netrc")) #Some windows versions uses _netrc
         write_earthdata_netrc(resolved_netrc, username, password)
         env["NETRC"] = str(resolved_netrc)
         
@@ -139,7 +140,7 @@ def run_podaac_downloader(
         dry_run=dry_run,
     )
 
-    try:
+    try: # to handle errors in download
         return subprocess.run(cmd, check=True, text=True, capture_output=True, env=env)
     except subprocess.CalledProcessError as e:
         print(f"Error: {e.stdout}")
@@ -186,28 +187,73 @@ def download_oscar_subset(
     return out_path
 
 
+def standardize_oscar_uv_netcdf(
+    input_nc: Path,
+    output_nc: Path,
+    area: StudyArea,
+    *,
+    u_var: str = "u",
+    v_var: str = "v",
+    lon_name: str = "lon",
+    lat_name: str = "lat",
+) -> Path:
+    """Normalize OSCAR longitude to [-180,180], clip to bbox, and keep only u/v."""
+    ds = xr.open_dataset(input_nc)
+
+    lon = ds[lon_name]
+    lon_norm = ((lon + 180) % 360) - 180
+    ds = ds.assign_coords({lon_name: lon_norm}).sortby(lon_name)
+
+    clipped = ds[[u_var, v_var]].sel(
+        {
+            lon_name: slice(area.lon_min, area.lon_max),
+            lat_name: slice(area.lat_min, area.lat_max),
+        }
+    )
+
+    output_nc.parent.mkdir(parents=True, exist_ok=True)
+    clipped.to_netcdf(output_nc)
+    ds.close()
+    clipped.close()
+    return output_nc
+
+
 def seasonal_periods(
-    start_date: date,
-    end_date: date,
+    start_date: str,
+    end_date: str,
     season_start_month: int,
     season_length_months: int = 3,
 ) -> list[tuple[date, date, str]]:
     """Create year-based seasonal windows (e.g., 3-month periods)."""
+    # periods: list[tuple[date, date, str]] = []
+    # span = max(1, min(12, season_length_months))
+
+    # From string (input) to datetime
+    # Should be the following format: 2020-01-01T00:00:00Z
+    fmt = '%Y-%m-%dT%H:%M:%SZ'
+    s_date = datetime.strptime(start_date, fmt).date()
+    e_date = datetime.strptime(end_date, fmt).date()
+
     periods: list[tuple[date, date, str]] = []
     span = max(1, min(12, season_length_months))
 
-    for year in range(start_date.year, end_date.year + 1):
+
+    for year in range(s_date.year, e_date.year + 1): 
+    # for year in range(start_date.year, end_date.year + 1):
         period_start = date(year, season_start_month, 1)
         end_month = ((season_start_month - 1 + span - 1) % 12) + 1
         end_year = year + (1 if season_start_month + span - 1 > 12 else 0)
         period_end = date(end_year, end_month, 1) + pd.offsets.MonthEnd(1)
         period_end = period_end.date()
 
-        if period_end < start_date or period_start > end_date:
+        # if period_end < start_date or period_start > end_date:
+        if period_end < s_date or period_start > e_date:
             continue
 
-        clipped_start = max(period_start, start_date)
-        clipped_end = min(period_end, end_date)
+        clipped_start = max(period_start, s_date)
+        clipped_end = min(period_end, e_date)
+        # clipped_start = max(period_start, start_date)
+        # clipped_end = min(period_end, end_date)
         pid = f"{year}-M{season_start_month:02d}_M{end_month:02d}"
         periods.append((clipped_start, clipped_end, pid))
 
@@ -218,16 +264,22 @@ def download_oscar_for_periods(
     cfg: OscarDownloadConfig,
     area: StudyArea,
     periods: list[tuple[date, date, str]],
+    *,
+    standardize: bool = False,
 ) -> list[Path]:
     """Download one OSCAR file per period."""
     outputs: list[Path] = []
     for pstart, pend, pid in periods:
-        out = download_oscar_subset(
+        raw_out = download_oscar_subset(
             cfg=cfg,
             area=area,
             start_dt=datetime(pstart.year, pstart.month, pstart.day),
             end_dt=datetime(pend.year, pend.month, pend.day, 23),
             output_name=f"oscar_{pid}_{pstart:%Y%m%d}_{pend:%Y%m%d}.nc",
         )
-        outputs.append(out)
+        if standardize:
+            std_out = cfg.output_dir / f"oscar_uv_clip_{pid}_{pstart:%Y%m%d}_{pend:%Y%m%d}.nc"
+            outputs.append(standardize_oscar_uv_netcdf(raw_out, std_out, area, u_var=cfg.u_var, v_var=cfg.v_var))
+        else:
+            outputs.append(raw_out)
     return outputs

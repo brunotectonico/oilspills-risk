@@ -219,32 +219,45 @@ def standardize_oscar_uv_netcdf(
 
 
 def seasonal_periods(
-    start_date: date,
-    end_date: date,
+    start_date: str,
+    end_date: str,
     season_start_month: int,
     season_length_months: int = 3,
 ) -> list[tuple[date, date, str]]:
     """Create year-based seasonal windows (e.g., 3-month periods)."""
+    # periods: list[tuple[date, date, str]] = []
+    # span = max(1, min(12, season_length_months))
+
+    # From string (input) to datetime
+    # Should be the following format: 2020-01-01T00:00:00Z
+    fmt = '%Y-%m-%dT%H:%M:%SZ'
+    s_date = datetime.strptime(start_date, fmt).date()
+    e_date = datetime.strptime(end_date, fmt).date()
+
     periods: list[tuple[date, date, str]] = []
     span = max(1, min(12, season_length_months))
 
-    for year in range(start_date.year, end_date.year + 1):
+
+    for year in range(s_date.year, e_date.year + 1): 
+    # for year in range(start_date.year, end_date.year + 1):
         period_start = date(year, season_start_month, 1)
         end_month = ((season_start_month - 1 + span - 1) % 12) + 1
         end_year = year + (1 if season_start_month + span - 1 > 12 else 0)
         period_end = date(end_year, end_month, 1) + pd.offsets.MonthEnd(1)
         period_end = period_end.date()
 
-        if period_end < start_date or period_start > end_date:
+        # if period_end < start_date or period_start > end_date:
+        if period_end < s_date or period_start > e_date:
             continue
 
-        clipped_start = max(period_start, start_date)
-        clipped_end = min(period_end, end_date)
+        clipped_start = max(period_start, s_date)
+        clipped_end = min(period_end, e_date)
+        # clipped_start = max(period_start, start_date)
+        # clipped_end = min(period_end, end_date)
         pid = f"{year}-M{season_start_month:02d}_M{end_month:02d}"
         periods.append((clipped_start, clipped_end, pid))
 
     return periods
-
 
 def download_oscar_for_periods(
     cfg: OscarDownloadConfig,
