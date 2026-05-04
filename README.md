@@ -77,8 +77,8 @@ bbox = StudyArea(lon_min=40.0, lon_max=45.0, lat_min=10.0, lat_max=14.0)
 result = run_podaac_downloader(
     collection="OSCAR_L4_OC_FINAL_V2.0",
     output_dir=Path("oscar_downloads"),
-    start_date=date(2020, 1, 1),
-    end_date=date(2020, 3, 31),
+    start_date=datetime(2020, 1, 1, 0, 0, 0).strftime('%Y-%m-%dT%H:%M:%SZ'), #dates should be strings in YYYYMMDDhhmmssZ format
+    end_date=datetime(2020, 3, 31, 23, 59, 59).strftime('%Y-%m-%dT%H:%M:%SZ'),
     bbox=bbox,
     dry_run=True,
 )

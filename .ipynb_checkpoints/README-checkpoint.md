@@ -15,7 +15,7 @@ This repository provides a modular coastal oil-spill risk screening workflow for
 2. **Optional mean density raster outputs (all pixels)**
    - Can save GeoTIFFs with mean density computed from **all valid raster pixels**, not only hotspot pixels.
    - Supports output frequency:
-     - `monthly`: one mean raster per `YYYY-MM`
+     - `monthly`: 12 mean rasters (`M01`..`M12`) aggregated across all analyzed years
      - `seasonal`: one mean raster per seasonal window (e.g., 3-month period)
 
 3. **Optional seasonal window (e.g., 3 months)**
@@ -56,6 +56,33 @@ python density_hotspots.py /path/to/gmtds_data \
   --mean-raster-frequency seasonal \
   --season-start-month 1 \
   --season-length-months 3
+```
+
+
+## Secure Earthdata auth with PO.DAAC downloader
+
+For the `podaac-data-downloader` mode (from `podaac/data-subscriber`), avoid hardcoding credentials in scripts.
+
+Recommended pattern:
+- Set environment variables `EARTHDATA_USERNAME` and `EARTHDATA_PASSWORD` in your shell/session.
+- Call `run_podaac_downloader(...)`; the helper writes a local netrc with restricted permissions and runs the CLI.
+
+```python
+from datetime import date
+from pathlib import Path
+
+from oilspill_risk.oscar import StudyArea, run_podaac_downloader
+
+bbox = StudyArea(lon_min=40.0, lon_max=45.0, lat_min=10.0, lat_max=14.0)
+result = run_podaac_downloader(
+    collection="OSCAR_L4_OC_FINAL_V2.0",
+    output_dir=Path("oscar_downloads"),
+    start_date=datetime(2020, 1, 1, 0, 0, 0).strftime('%Y-%m-%dT%H:%M:%SZ'), #dates should be strings in YYYYMMDDhhmmssZ format
+    end_date=datetime(2020, 3, 31, 23, 59, 59).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    bbox=bbox,
+    dry_run=True,
+)
+print(result.stdout)
 ```
 
 ## Example OSCAR period downloads
