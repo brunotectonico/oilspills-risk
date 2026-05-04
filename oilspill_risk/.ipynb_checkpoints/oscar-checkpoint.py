@@ -12,7 +12,6 @@ from urllib.parse import quote
 from urllib.request import urlretrieve
 
 import pandas as pd
-import xarray as xr
 
 
 @dataclass(frozen=True)
@@ -86,7 +85,7 @@ def build_podaac_downloader_cmd(
     ]
 
     if start_date is not None:
-        cmd += ["-sd", start_date] #Assumes date already in string format (based in init.py)
+        cmd += ["-sd", start_date]
     if end_date is not None:
         cmd += ["-ed", end_date]
     if bbox is not None:
@@ -125,7 +124,7 @@ def run_podaac_downloader(
 
     env = os.environ.copy()
     if username and password:
-        resolved_netrc = netrc_path or (Path.home() / (".netrc" if os.name == "nt" else ".netrc")) #Some windows versions uses _netrc
+        resolved_netrc = netrc_path or (Path.home() / (".netrc" if os.name == "nt" else ".netrc"))
         write_earthdata_netrc(resolved_netrc, username, password)
         env["NETRC"] = str(resolved_netrc)
         
@@ -140,7 +139,7 @@ def run_podaac_downloader(
         dry_run=dry_run,
     )
 
-    try: # to handle errors in download
+    try:
         return subprocess.run(cmd, check=True, text=True, capture_output=True, env=env)
     except subprocess.CalledProcessError as e:
         print(f"Error: {e.stdout}")
@@ -187,37 +186,6 @@ def download_oscar_subset(
     return out_path
 
 
-def standardize_oscar_uv_netcdf(
-    input_nc: Path,
-    output_nc: Path,
-    area: StudyArea,
-    *,
-    u_var: str = "u",
-    v_var: str = "v",
-    lon_name: str = "lon",
-    lat_name: str = "lat",
-) -> Path:
-    """Normalize OSCAR longitude to [-180,180], clip to bbox, and keep only u/v."""
-    ds = xr.open_dataset(input_nc)
-
-    lon = ds[lon_name]
-    lon_norm = ((lon + 180) % 360) - 180
-    ds = ds.assign_coords({lon_name: lon_norm}).sortby(lon_name)
-
-    clipped = ds[[u_var, v_var]].sel(
-        {
-            lon_name: slice(area.lon_min, area.lon_max),
-            lat_name: slice(area.lat_min, area.lat_max),
-        }
-    )
-
-    output_nc.parent.mkdir(parents=True, exist_ok=True)
-    clipped.to_netcdf(output_nc)
-    ds.close()
-    clipped.close()
-    return output_nc
-
-
 def seasonal_periods(
     start_date: date,
     end_date: date,
@@ -250,22 +218,16 @@ def download_oscar_for_periods(
     cfg: OscarDownloadConfig,
     area: StudyArea,
     periods: list[tuple[date, date, str]],
-    *,
-    standardize: bool = False,
 ) -> list[Path]:
     """Download one OSCAR file per period."""
     outputs: list[Path] = []
     for pstart, pend, pid in periods:
-        raw_out = download_oscar_subset(
+        out = download_oscar_subset(
             cfg=cfg,
             area=area,
             start_dt=datetime(pstart.year, pstart.month, pstart.day),
             end_dt=datetime(pend.year, pend.month, pend.day, 23),
             output_name=f"oscar_{pid}_{pstart:%Y%m%d}_{pend:%Y%m%d}.nc",
         )
-        if standardize:
-            std_out = cfg.output_dir / f"oscar_uv_clip_{pid}_{pstart:%Y%m%d}_{pend:%Y%m%d}.nc"
-            outputs.append(standardize_oscar_uv_netcdf(raw_out, std_out, area, u_var=cfg.u_var, v_var=cfg.v_var))
-        else:
-            outputs.append(raw_out)
+        outputs.append(out)
     return outputs

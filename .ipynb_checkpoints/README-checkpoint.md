@@ -115,16 +115,6 @@ cfg = OscarDownloadConfig(
 downloaded = download_oscar_for_periods(cfg, area, periods)
 ```
 
-
-### NetCDF standardization for GIS and trajectory
-
-If OSCAR files are in `0..360` longitude and appear twisted in GIS:
-- use `standardize_oscar_uv_netcdf(...)` to normalize longitude to `-180..180`,
-- clip to your hotspot study area,
-- and keep only `u` and `v` variables for trajectory runs.
-
-You can then load currents directly into the trajectory module with `current_field_from_netcdf(...)`.
-
 ## Still to complete
 
 - Robust OSCAR provider defaults (dataset IDs/URLs can vary by server).
