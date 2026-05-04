@@ -1,4 +1,4 @@
-"""OSCAR data download and period utilities."""
+"""OSCAR download and NetCDF utilities using PO.DAAC downloader workflow."""
 
 from __future__ import annotations
 
@@ -6,10 +6,8 @@ import os
 import stat
 import subprocess
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
-from urllib.parse import quote
-from urllib.request import urlretrieve
 
 import pandas as pd
 import xarray as xr
@@ -27,11 +25,10 @@ class StudyArea:
 
 @dataclass(frozen=True)
 class OscarDownloadConfig:
-    """Download options for OSCAR NetCDF subsets."""
+    """PO.DAAC downloader options for OSCAR data pulls."""
 
     output_dir: Path
-    base_griddap_url: str
-    dataset_id: str
+    podaac_collection: str
     u_var: str = "u"
     v_var: str = "v"
 
@@ -197,7 +194,7 @@ def standardize_oscar_uv_netcdf(
     lon_name: str = "lon",
     lat_name: str = "lat",
 ) -> Path:
-    """Normalize OSCAR longitude to [-180,180], clip to bbox, and keep only u/v."""
+    """Normalize longitude to [-180,180], clip bbox, and keep only u/v variables."""
     ds = xr.open_dataset(input_nc)
 
     lon = ds[lon_name]
@@ -225,8 +222,6 @@ def seasonal_periods(
     season_length_months: int = 3,
 ) -> list[tuple[date, date, str]]:
     """Create year-based seasonal windows (e.g., 3-month periods)."""
-    # periods: list[tuple[date, date, str]] = []
-    # span = max(1, min(12, season_length_months))
 
     # From string (input) to datetime
     # Should be the following format: 2020-01-01T00:00:00Z
@@ -239,21 +234,17 @@ def seasonal_periods(
 
 
     for year in range(s_date.year, e_date.year + 1): 
-    # for year in range(start_date.year, end_date.year + 1):
         period_start = date(year, season_start_month, 1)
         end_month = ((season_start_month - 1 + span - 1) % 12) + 1
         end_year = year + (1 if season_start_month + span - 1 > 12 else 0)
         period_end = date(end_year, end_month, 1) + pd.offsets.MonthEnd(1)
         period_end = period_end.date()
 
-        # if period_end < start_date or period_start > end_date:
         if period_end < s_date or period_start > e_date:
             continue
 
         clipped_start = max(period_start, s_date)
         clipped_end = min(period_end, e_date)
-        # clipped_start = max(period_start, start_date)
-        # clipped_end = min(period_end, end_date)
         pid = f"{year}-M{season_start_month:02d}_M{end_month:02d}"
         periods.append((clipped_start, clipped_end, pid))
 
@@ -262,23 +253,34 @@ def seasonal_periods(
 def download_oscar_for_periods(
     cfg: OscarDownloadConfig,
     area: StudyArea,
-    periods: list[tuple[date, date, str]],
+    periods: list[tuple[str, str, str]],
     *,
     standardize: bool = False,
 ) -> list[Path]:
-    """Download one OSCAR file per period."""
+    """Download one OSCAR file per period using only PO.DAAC downloader logic."""
     outputs: list[Path] = []
+
     for pstart, pend, pid in periods:
-        raw_out = download_oscar_subset(
-            cfg=cfg,
-            area=area,
-            start_dt=datetime(pstart.year, pstart.month, pstart.day),
-            end_dt=datetime(pend.year, pend.month, pend.day, 23),
-            output_name=f"oscar_{pid}_{pstart:%Y%m%d}_{pend:%Y%m%d}.nc",
+        existing = {p.resolve() for p in cfg.output_dir.glob("*.nc")}
+        run_podaac_downloader(
+            collection=cfg.podaac_collection,
+            output_dir=cfg.output_dir,
+            start_date=pstart,
+            end_date=pend,
+            bbox=area,
+            dry_run=False,
         )
+
+        current = sorted(cfg.output_dir.glob("*.nc"), key=lambda p: p.stat().st_mtime)
+        new_files = [p for p in current if p.resolve() not in existing]
+        if not new_files:
+            raise FileNotFoundError(f"No new NetCDF files found in {cfg.output_dir} for period {pid}")
+
+        raw_out = new_files[-1]
         if standardize:
             std_out = cfg.output_dir / f"oscar_uv_clip_{pid}_{pstart:%Y%m%d}_{pend:%Y%m%d}.nc"
             outputs.append(standardize_oscar_uv_netcdf(raw_out, std_out, area, u_var=cfg.u_var, v_var=cfg.v_var))
         else:
             outputs.append(raw_out)
+
     return outputs
