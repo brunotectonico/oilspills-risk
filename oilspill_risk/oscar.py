@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 import warnings
@@ -14,7 +15,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
-
 
 
 @dataclass(frozen=True)
@@ -148,33 +148,46 @@ def run_podaac_downloader(
         print(f"Details: {e.stderr}") 
         raise    
 
+def _to_360(lon: float) -> float:
+    return lon % 360
+
 
 def _subset_lon_lat_robust(ds: xr.Dataset, area: StudyArea, lon_name: str, lat_name: str) -> xr.Dataset:
     """Subset lon/lat robustly for descending coords and dateline-crossing ranges."""
-    lon = ds[lon_name].values
-    lat = ds[lat_name].values
+    lon_vals = np.asarray(ds[lon_name].values)
+    lat_vals = np.asarray(ds[lat_name].values)
 
-    # Convert area to OSCAR's 0-360 convention
-    lon_min_360 = (area.lon_min + 360) % 360
-    lon_max_360 = (area.lon_max + 360) % 360
+    lon_uses_360 = float(np.nanmax(lon_vals)) > 180.0
+    if lon_uses_360:
+        lon_min = _to_360(area.lon_min)
+        lon_max = _to_360(area.lon_max)
+    else:
+        lon_min = ((area.lon_min + 180) % 360) - 180
+        lon_max = ((area.lon_max + 180) % 360) - 180
 
-    print(f"Raw lon range: {lon.min():.1f}→{lon.max():.1f}, target: {lon_min_360:.1f}→{lon_max_360:.1f}")
-    print(f"Raw lat range: {lat.min():.1f}→{lat.max():.1f}, target: {min(area.lat_min, area.lat_max):.1f}→{max(area.lat_max, area.lat_min):.1f}")
+    if lon_min <= lon_max:
+        lon_mask = (lon_vals >= lon_min) & (lon_vals <= lon_max)
+    else:
+        lon_mask = (lon_vals >= lon_min) | (lon_vals <= lon_max)
 
-    if lon_min_360 <= lon_max_360:
-        lon_mask = (lon >= lon_min_360) & (lon <= lon_max_360)
-    else:  # Dateline cross
-        lon_mask = (lon >= lon_min_360) | (lon <= lon_max_360)
-    
-    lat_mask = (lat >= min(area.lat_min, area.lat_max)) & (lat <= max(area.lat_max, area.lat_min))
-    
+    lat_lo = min(area.lat_min, area.lat_max)
+    lat_hi = max(area.lat_min, area.lat_max)
+    lat_mask = (lat_vals >= lat_lo) & (lat_vals <= lat_hi)
+
     lon_idx = np.where(lon_mask)[0]
     lat_idx = np.where(lat_mask)[0]
-    print(f"Selected: lon={len(lon_idx)} pts, lat={len(lat_idx)} pts")
-    if len(lon_idx) == 0 or len(lat_idx) == 0:
-        raise ValueError(f"No overlap! lon_idx={lon_idx[:5]}, lat_idx={lat_idx[:5]}")
-    
+    if lon_idx.size == 0 or lat_idx.size == 0:
+        raise ValueError("No grid cells found within requested lon/lat bounds")
+
     return ds.isel({lon_name: lon_idx, lat_name: lat_idx})
+
+
+def _extract_data_date(raw_file: Path) -> str:
+    """Extract YYYYMMDD from a raw OSCAR filename."""
+    m = re.search(r"(19|20)\d{6}", raw_file.name)
+    if not m:
+        raise ValueError(f"Could not parse data date from filename: {raw_file.name}")
+    return m.group(0)
 
 
 def standardize_oscar_uv_netcdf(
@@ -187,6 +200,7 @@ def standardize_oscar_uv_netcdf(
     lon_name: str = "lon",
     lat_name: str = "lat",
 ) -> Path:
+    """Subset raw data, normalize lon to [-180,180], sort, then keep u/v only."""
     """Normalize longitude to [-180,180], sort longitude, then clip and keep u/v only."""
     ds = None
     try:
@@ -223,6 +237,7 @@ def standardize_oscar_uv_netcdf(
     finally:
         if ds: ds.close()
 
+
 def seasonal_periods(
     start_date: str,
     end_date: str,
@@ -247,7 +262,7 @@ def seasonal_periods(
     def _add_months(y: int, m: int, delta: int) -> tuple[int, int]: #nested function to calculate the time window
         total = (y * 12 + (m - 1)) + delta
         return total // 12, (total % 12) + 1
-    
+        
     while True:
         # Window start = current month
         period_start = date(current_year, current_month, 1)
@@ -286,6 +301,16 @@ def seasonal_periods(
         current_year, current_month = next_year, next_month
 
     return periods
+  
+  
+def _raw_oscar_files(output_dir: Path) -> set[Path]:
+    """Track raw OSCAR .nc files only (exclude clipped outputs)."""
+    return {
+        p.resolve()
+        for p in output_dir.glob("*.nc")
+        if "clip" not in p.name.lower() and p.name.lower().startswith("oscar")
+    }
+  
 
 def download_oscar_for_periods(
     cfg: OscarDownloadConfig,
@@ -294,12 +319,13 @@ def download_oscar_for_periods(
     *,
     standardize: bool = False,
 ) -> list[Path]:
-    """Download one OSCAR file per period using only PO.DAAC downloader logic."""
+    """Download OSCAR files for period using PO.DAAC downloader logic."""
     outputs: list[Path] = []
 
     for pstart, pend, pid in periods:
-        existing = {p.resolve() for p in cfg.output_dir.glob("*.nc")}
-
+        existing = _raw_oscar_files(cfg.output_dir)
+        print(f"[DEBUG] period={pid} existing_raw={len(existing)}")
+        
         # to string..
         start_str = pstart.strftime('%Y-%m-%dT%H:%M:%SZ')
         end_str = pend.strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -314,18 +340,21 @@ def download_oscar_for_periods(
             dry_run=False,
         )
 
-        current = sorted(cfg.output_dir.glob("*.nc"), key=lambda p: p.stat().st_mtime)
-        new_files = [p for p in current if p.resolve() not in existing]
+        current_raw = sorted(_raw_oscar_files(cfg.output_dir), key=lambda p: p.stat().st_mtime)
+        new_files = [p for p in current_raw if p.resolve() not in existing]
+        print(f"[DEBUG] period={pid} new_raw={len(new_files)}")
         if not new_files:
-            raise FileNotFoundError(f"No new NetCDF files found in {cfg.output_dir} for period {pid}")
+            raise FileNotFoundError(f"No new raw NetCDF files found in {cfg.output_dir} for period {pid}")
 
-        raw_out = new_files[-1]
-        if standardize:
-            raw_day = raw_out.stat().st_mtime
-            day_str = datetime.fromtimestamp(raw_day).strftime('%Y%m%d')
-            std_out = cfg.output_dir / f"oscar_uv_clip_{day_str}.nc"
-            outputs.append(standardize_oscar_uv_netcdf(raw_out, std_out, area, u_var=cfg.u_var, v_var=cfg.v_var))
-        else:
-            outputs.append(raw_out)
+        for raw_out in new_files:
+            if standardize:
+                data_date = _extract_data_date(raw_out)
+                std_out = cfg.output_dir / f"oscar_uv_clip_{data_date}.nc"
+                print(f"[DEBUG] standardize raw={raw_out.name} -> clip={std_out.name}")
+                outputs.append(
+                    standardize_oscar_uv_netcdf(raw_out, std_out, area, u_var=cfg.u_var, v_var=cfg.v_var)
+                )
+            else:
+                outputs.append(raw_out)
 
     return outputs
