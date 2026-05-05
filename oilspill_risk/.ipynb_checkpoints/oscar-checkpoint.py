@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import stat
 import subprocess
 import warnings
@@ -15,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
+
 
 
 @dataclass(frozen=True)
@@ -148,91 +148,33 @@ def run_podaac_downloader(
         print(f"Details: {e.stderr}") 
         raise    
 
-def _to_360(lon: float) -> float:
-    return lon % 360
 
-
-def _infer_lon_lat_names(ds: xr.Dataset, lon_name: str, lat_name: str) -> tuple[str, str]:
-    """Resolve lon/lat coordinate names from dataset contents and attrs."""
-    lon_candidates = [lon_name, "longitude", "x", "lon"]
-    lat_candidates = [lat_name, "latitude", "y", "lat"]
-
-    resolved_lon = next((n for n in lon_candidates if n in ds.coords or n in ds.variables), lon_name)
-    resolved_lat = next((n for n in lat_candidates if n in ds.coords or n in ds.variables), lat_name)
-    return resolved_lon, resolved_lat
-
-
-def _reconstruct_degree_coords(ds: xr.Dataset, lon_name: str, lat_name: str) -> xr.Dataset:
-    """Rebuild lon/lat degrees if dataset stores index-like coordinates."""
-    lon = np.asarray(ds[lon_name].values, dtype=float)
-    lat = np.asarray(ds[lat_name].values, dtype=float)
-
-    lon_index_like = np.allclose(lon, np.arange(lon.size))
-    lat_index_like = np.allclose(lat, np.arange(lat.size))
-
-    if lon_index_like:
-        glon_min = ds.attrs.get("geospatial_lon_min")
-        glon_max = ds.attrs.get("geospatial_lon_max")
-        glon_res = ds.attrs.get("geospatial_lon_resolution")
-        if glon_res is not None and isinstance(glon_res, str):
-            glon_res = float(glon_res.split()[0])
-        if glon_min is not None and glon_max is not None:
-            if glon_res is None:
-                glon_res = (float(glon_max) - float(glon_min)) / max(1, lon.size - 1)
-            lon = float(glon_min) + np.arange(lon.size) * float(glon_res)
-            ds = ds.assign_coords({lon_name: lon})
-
-    if lat_index_like:
-        glat_min = ds.attrs.get("geospatial_lat_min")
-        glat_max = ds.attrs.get("geospatial_lat_max")
-        glat_res = ds.attrs.get("geospatial_lat_resolution")
-        if glat_res is not None and isinstance(glat_res, str):
-            glat_res = float(glat_res.split()[0])
-        if glat_min is not None and glat_max is not None:
-            if glat_res is None:
-                glat_res = (float(glat_max) - float(glat_min)) / max(1, lat.size - 1)
-            lat = float(glat_min) + np.arange(lat.size) * float(glat_res)
-            ds = ds.assign_coords({lat_name: lat})
-
-    return ds
-  
-  
 def _subset_lon_lat_robust(ds: xr.Dataset, area: StudyArea, lon_name: str, lat_name: str) -> xr.Dataset:
     """Subset lon/lat robustly for descending coords and dateline-crossing ranges."""
-    lon_vals = np.asarray(ds[lon_name].values)
-    lat_vals = np.asarray(ds[lat_name].values)
+    lon = ds[lon_name].values
+    lat = ds[lat_name].values
 
-    lon_uses_360 = float(np.nanmax(lon_vals)) > 180.0
-    if lon_uses_360:
-        lon_min = _to_360(area.lon_min)
-        lon_max = _to_360(area.lon_max)
-    else:
-        lon_min = ((area.lon_min + 180) % 360) - 180
-        lon_max = ((area.lon_max + 180) % 360) - 180
+    # Convert area to OSCAR's 0-360 convention
+    lon_min_360 = (area.lon_min + 360) % 360
+    lon_max_360 = (area.lon_max + 360) % 360
 
-    if lon_min <= lon_max:
-        lon_mask = (lon_vals >= lon_min) & (lon_vals <= lon_max)
-    else:
-        lon_mask = (lon_vals >= lon_min) | (lon_vals <= lon_max)
+    print(f"Raw lon range: {lon.min():.1f}→{lon.max():.1f}, target: {lon_min_360:.1f}→{lon_max_360:.1f}")
+    print(f"Raw lat range: {lat.min():.1f}→{lat.max():.1f}, target: {min(area.lat_min, area.lat_max):.1f}→{max(area.lat_max, area.lat_min):.1f}")
 
-    lat_lo = min(area.lat_min, area.lat_max)
-    lat_hi = max(area.lat_min, area.lat_max)
-    lat_mask = (lat_vals >= lat_lo) & (lat_vals <= lat_hi)
-
+    if lon_min_360 <= lon_max_360:
+        lon_mask = (lon >= lon_min_360) & (lon <= lon_max_360)
+    else:  # Dateline cross
+        lon_mask = (lon >= lon_min_360) | (lon <= lon_max_360)
+    
+    lat_mask = (lat >= min(area.lat_min, area.lat_max)) & (lat <= max(area.lat_max, area.lat_min))
+    
     lon_idx = np.where(lon_mask)[0]
     lat_idx = np.where(lat_mask)[0]
-    if lon_idx.size == 0 or lat_idx.size == 0:
-        raise ValueError("No grid cells found within requested lon/lat bounds")
-
+    print(f"Selected: lon={len(lon_idx)} pts, lat={len(lat_idx)} pts")
+    if len(lon_idx) == 0 or len(lat_idx) == 0:
+        raise ValueError(f"No overlap! lon_idx={lon_idx[:5]}, lat_idx={lat_idx[:5]}")
+    
     return ds.isel({lon_name: lon_idx, lat_name: lat_idx})
-
-
-def _extract_data_date(raw_file: Path) -> str:
-    """Extract YYYYMMDD from a raw OSCAR filename."""
-    m = re.search(r"(19|20)\d{6}", raw_file.name)
-    if not m:
-        raise ValueError(f"Could not parse data date from filename: {raw_file.name}")
-    return m.group(0)
 
 
 def standardize_oscar_uv_netcdf(
@@ -245,50 +187,33 @@ def standardize_oscar_uv_netcdf(
     lon_name: str = "lon",
     lat_name: str = "lat",
 ) -> Path:
-    """Subset raw data, normalize lon to [-180,180], sort, then keep u/v only."""
+    """Normalize longitude to [-180,180], sort longitude, then clip and keep u/v only."""
     ds = None
     try:
         ds = xr.open_dataset(input_nc)
-        lon_name, lat_name = _infer_lon_lat_names(ds, lon_name=lon_name, lat_name=lat_name)
-        ds = _reconstruct_degree_coords(ds, lon_name=lon_name, lat_name=lat_name)
 
-        print(f"[DEBUG] raw dims={dict(ds.dims)} lon_name={lon_name} lat_name={lat_name}")
-        print(f"[DEBUG] raw lon range=({float(ds[lon_name].min())},{float(ds[lon_name].max())})")
-        print(f"[DEBUG] raw lat range=({float(ds[lat_name].min())},{float(ds[lat_name].max())})")
-        
+        # Automatic detection of coordinates
+        actual_lon = next((n for n in [lon_name, 'longitude', 'x', 'long'] if n in ds.dims), None)
+        actual_lat = next((n for n in [lat_name, 'latitude', 'y'] if n in ds.dims), None)
+        if not actual_lon or not actual_lat:
+            raise KeyError(f"No coordinates found. Variables present: {list(ds.dims)}")
+
         # Automatic detection of variables (U/V)        
         actual_u = next((n for n in [u_var, 'u_current', 'ugos', 'u_curr'] if n in ds.data_vars), None)
         actual_v = next((n for n in [v_var, 'v_current', 'vgos', 'v_curr'] if n in ds.data_vars), None)
         if not actual_u or not actual_v:
             raise KeyError(f"No U/V variables found. Variables: {list(ds.data_vars)}")
 
-        # CRITICAL: 1. SUBSET RAW
-        raw_subset = _subset_lon_lat_robust(ds, area, lon_name, lat_name)
+        # CRITICAL: 1. SUBSET RAW → 2. NORMALIZE → 3. u/v only
+        raw_subset = _subset_lon_lat_robust(ds, area, actual_lon, actual_lat)
+        lon_norm = ((raw_subset[actual_lon] + 180) % 360) - 180
+        norm_subset = raw_subset.assign_coords({actual_lon: lon_norm}).sortby(actual_lon)
+        only_uv = norm_subset[[actual_u, actual_v]]
         
-        # 2. normalize lon to [-180, 180] and sort
-        subset_raw = subset_raw.assign_coords({lon_name: ((subset_raw[lon_name] + 180) % 360) - 180})
-        subset_raw = subset_raw.sortby(lon_name)
-        subset_raw = subset_raw.sortby(lat_name)
-        
-        # 3) select u and v only, replacing fill values with NaN for GIS stats
-        only_uv = subset_raw[[actual_u, actual_v]]
-        for var_name in [actual_u, actual_v]:
-            fill_value = only_uv[var_name].attrs.get("_FillValue")
-            if fill_value is not None:
-                only_uv[var_name] = only_uv[var_name].where(only_uv[var_name] != fill_value)
-        
-        # CRS hints for GIS readers
-        only_uv[lon_name].attrs.update({"standard_name": "longitude", "units": "degrees_east"})
-        only_uv[lat_name].attrs.update({"standard_name": "latitude", "units": "degrees_north"})
-    
         output_nc.parent.mkdir(parents=True, exist_ok=True)
         only_uv.to_netcdf(output_nc)
-        finite_u = int(np.isfinite(only_uv[actual_u].values).sum())
-        finite_v = int(np.isfinite(only_uv[actual_v].values).sum())
-        print(f"[DEBUG] standardized={output_nc.name} finite_u={finite_u} finite_v={finite_v}")
-                
-        ds.close()
-        subset_raw.close()
+        print(f"Output {output_nc}: u.shape={only_uv[actual_u].shape}")
+        
         only_uv.close()
         return output_nc
         
@@ -298,13 +223,13 @@ def standardize_oscar_uv_netcdf(
     finally:
         if ds: ds.close()
 
-
 def seasonal_periods(
     start_date: str,
     end_date: str,
     season_length_months: int = 3,
 ) -> list[tuple[date, date, str]]:
     """Create non-overlapping seasonal windows starting from start_date.
+    
     Each window is exactly season_length_months long. Next window starts
     exactly after the previous one ends. Warns if any window is incomplete."""
     # From string (input) to datetime
@@ -322,7 +247,7 @@ def seasonal_periods(
     def _add_months(y: int, m: int, delta: int) -> tuple[int, int]: #nested function to calculate the time window
         total = (y * 12 + (m - 1)) + delta
         return total // 12, (total % 12) + 1
-        
+    
     while True:
         # Window start = current month
         period_start = date(current_year, current_month, 1)
@@ -361,16 +286,6 @@ def seasonal_periods(
         current_year, current_month = next_year, next_month
 
     return periods
-  
-  
-def _raw_oscar_files(output_dir: Path) -> set[Path]:
-    """Track raw OSCAR .nc files only (exclude clipped outputs)."""
-    return {
-        p.resolve()
-        for p in output_dir.glob("*.nc")
-        if "clip" not in p.name.lower() and p.name.lower().startswith("oscar")
-    }
-
 
 def download_oscar_for_periods(
     cfg: OscarDownloadConfig,
@@ -379,13 +294,12 @@ def download_oscar_for_periods(
     *,
     standardize: bool = False,
 ) -> list[Path]:
-    """Download OSCAR files for period using PO.DAAC downloader logic."""
+    """Download one OSCAR file per period using only PO.DAAC downloader logic."""
     outputs: list[Path] = []
 
     for pstart, pend, pid in periods:
-        existing = _raw_oscar_files(cfg.output_dir)
-        print(f"[DEBUG] period={pid} existing_raw={len(existing)}")
-        
+        existing = {p.resolve() for p in cfg.output_dir.glob("*.nc")}
+
         # to string..
         start_str = pstart.strftime('%Y-%m-%dT%H:%M:%SZ')
         end_str = pend.strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -400,21 +314,18 @@ def download_oscar_for_periods(
             dry_run=False,
         )
 
-        current_raw = sorted(_raw_oscar_files(cfg.output_dir), key=lambda p: p.stat().st_mtime)
-        new_files = [p for p in current_raw if p.resolve() not in existing]
-        print(f"[DEBUG] period={pid} new_raw={len(new_files)}")
+        current = sorted(cfg.output_dir.glob("*.nc"), key=lambda p: p.stat().st_mtime)
+        new_files = [p for p in current if p.resolve() not in existing]
         if not new_files:
-            raise FileNotFoundError(f"No new raw NetCDF files found in {cfg.output_dir} for period {pid}")
+            raise FileNotFoundError(f"No new NetCDF files found in {cfg.output_dir} for period {pid}")
 
-        for raw_out in new_files:
-            if standardize:
-                data_date = _extract_data_date(raw_out)
-                std_out = cfg.output_dir / f"oscar_uv_clip_{data_date}.nc"
-                print(f"[DEBUG] standardize raw={raw_out.name} -> clip={std_out.name}")
-                outputs.append(
-                    standardize_oscar_uv_netcdf(raw_out, std_out, area, u_var=cfg.u_var, v_var=cfg.v_var)
-                )
-            else:
-                outputs.append(raw_out)
+        raw_out = new_files[-1]
+        if standardize:
+            raw_day = raw_out.stat().st_mtime
+            day_str = datetime.fromtimestamp(raw_day).strftime('%Y%m%d')
+            std_out = cfg.output_dir / f"oscar_uv_clip_{day_str}.nc"
+            outputs.append(standardize_oscar_uv_netcdf(raw_out, std_out, area, u_var=cfg.u_var, v_var=cfg.v_var))
+        else:
+            outputs.append(raw_out)
 
     return outputs
