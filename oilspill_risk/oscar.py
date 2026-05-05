@@ -147,36 +147,36 @@ def _to_360(lon: float) -> float:
 def _infer_lon_lat_names(ds: xr.Dataset, lon_name: str, lat_name: str) -> tuple[str, str]:
     """Resolve lon/lat coordinate names from dataset contents and metadata."""
 
-    def _is_lon(var: xr.DataArray) -> bool:
-        std = str(var.attrs.get("standard_name", "")).lower()
-        units = str(var.attrs.get("units", "")).lower()
-        name = str(var.name).lower() if var.name is not None else ""
+    def _is_lon(var_key: str, var_obj: xr.DataArray | xr.Variable) -> bool:
+        attrs = getattr(var_obj, "attrs", {})
+        std = str(attrs.get("standard_name", "")).lower()
+        units = str(attrs.get("units", "")).lower()
+        name = str(var_key).lower()
         return (
             "longitude" in std
             or "degrees_east" in units
             or name in {"lon", "longitude", "x"}
         )
 
-    def _is_lat(var: xr.DataArray) -> bool:
-        std = str(var.attrs.get("standard_name", "")).lower()
-        units = str(var.attrs.get("units", "")).lower()
-        name = str(var.name).lower() if var.name is not None else ""
+    def _is_lat(var_key: str, var_obj: xr.DataArray | xr.Variable) -> bool:
+        attrs = getattr(var_obj, "attrs", {})
+        std = str(attrs.get("standard_name", "")).lower()
+        units = str(attrs.get("units", "")).lower()
+        name = str(var_key).lower()
         return (
             "latitude" in std
             or "degrees_north" in units
             or name in {"lat", "latitude", "y"}
         )
 
-    coords = {k: v for k, v in ds.coords.items()}
-    vars_all = {k: v for k, v in ds.variables.items()}
+    merged = {**dict(ds.coords.items()), **dict(ds.variables.items())}
 
-    lon_found = [k for k, v in {**coords, **vars_all}.items() if _is_lon(v)]
-    lat_found = [k for k, v in {**coords, **vars_all}.items() if _is_lat(v)]
+    lon_found = [k for k, v in merged.items() if _is_lon(k, v)]
+    lat_found = [k for k, v in merged.items() if _is_lat(k, v)]
 
     resolved_lon = lon_found[0] if lon_found else lon_name
     resolved_lat = lat_found[0] if lat_found else lat_name
 
-    # fallback to explicit names if both got same var by loose matching
     if resolved_lon == resolved_lat:
         if lon_name in ds.variables or lon_name in ds.coords:
             resolved_lon = lon_name
