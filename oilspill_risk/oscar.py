@@ -294,16 +294,32 @@ def standardize_oscar_uv_netcdf(
     subset_raw = subset_raw.sortby(lon_name)
     subset_raw = subset_raw.sortby(lat_name)
 
+    # enforce canonical GIS-friendly coord names and dimensions
+    lon_dim = subset_raw[lon_name].dims[0]
+    lat_dim = subset_raw[lat_name].dims[0]
+    rename_map = {}
+    if lon_dim != "lon":
+        rename_map[lon_dim] = "lon"
+    if lat_dim != "lat":
+        rename_map[lat_dim] = "lat"
+    if lon_name != "lon":
+        rename_map[lon_name] = "lon"
+    if lat_name != "lat":
+        rename_map[lat_name] = "lat"
+    if rename_map:
+        subset_raw = subset_raw.rename(rename_map)
+
     # 3) select u and v only, replacing fill values with NaN for GIS stats
     only_uv = subset_raw[[u_var, v_var]]
     for var_name in [u_var, v_var]:
         fill_value = only_uv[var_name].attrs.get("_FillValue")
         if fill_value is not None:
             only_uv[var_name] = only_uv[var_name].where(only_uv[var_name] != fill_value)
+        only_uv[var_name].attrs["coordinates"] = "lon lat"
 
     # CRS hints for GIS readers
-    only_uv[lon_name].attrs.update({"standard_name": "longitude", "units": "degrees_east"})
-    only_uv[lat_name].attrs.update({"standard_name": "latitude", "units": "degrees_north"})
+    only_uv["lon"].attrs.update({"standard_name": "longitude", "units": "degrees_east", "axis": "X"})
+    only_uv["lat"].attrs.update({"standard_name": "latitude", "units": "degrees_north", "axis": "Y"})
 
     # 4) save
     output_nc.parent.mkdir(parents=True, exist_ok=True)
