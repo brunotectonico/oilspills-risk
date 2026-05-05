@@ -224,8 +224,15 @@ def _reconstruct_degree_coords(ds: xr.Dataset, lon_name: str, lat_name: str) -> 
     return ds
 def _subset_lon_lat_robust(ds: xr.Dataset, area: StudyArea, lon_name: str, lat_name: str) -> xr.Dataset:
     """Subset lon/lat robustly for descending coords and dateline-crossing ranges."""
+    if lon_name not in ds.variables and lon_name not in ds.coords:
+        raise KeyError(f"Longitude coordinate '{lon_name}' not found. Available: {list(ds.variables)}")
+    if lat_name not in ds.variables and lat_name not in ds.coords:
+        raise KeyError(f"Latitude coordinate '{lat_name}' not found. Available: {list(ds.variables)}")
+
     lon_vals = np.asarray(ds[lon_name].values)
     lat_vals = np.asarray(ds[lat_name].values)
+    lon_dim = ds[lon_name].dims[0]
+    lat_dim = ds[lat_name].dims[0]
 
     lon_uses_360 = float(np.nanmax(lon_vals)) > 180.0
     if lon_uses_360:
@@ -249,7 +256,7 @@ def _subset_lon_lat_robust(ds: xr.Dataset, area: StudyArea, lon_name: str, lat_n
     if lon_idx.size == 0 or lat_idx.size == 0:
         raise ValueError("No grid cells found within requested lon/lat bounds")
 
-    return ds.isel({lon_name: lon_idx, lat_name: lat_idx})
+    return ds.isel({lon_dim: lon_idx, lat_dim: lat_idx})
 
 
 def _extract_data_date(raw_file: Path) -> str:
