@@ -35,6 +35,21 @@ class OscarDownloadConfig:
     v_var: str = "v"
 
 
+
+
+def validate_study_area(area: StudyArea) -> StudyArea:
+    """Validate and normalize StudyArea bounds."""
+    lon_min, lon_max = sorted([float(area.lon_min), float(area.lon_max)])
+    lat_min, lat_max = sorted([float(area.lat_min), float(area.lat_max)])
+
+    if not (-180.0 <= lon_min <= 360.0 and -180.0 <= lon_max <= 360.0):
+        raise ValueError(f"Invalid longitude bounds: {lon_min}, {lon_max}")
+    if not (-90.0 <= lat_min <= 90.0 and -90.0 <= lat_max <= 90.0):
+        raise ValueError(f"Invalid latitude bounds: {lat_min}, {lat_max}")
+    if lon_min == lon_max or lat_min == lat_max:
+        raise ValueError("StudyArea bounds collapse to zero width/height")
+
+    return StudyArea(lon_min=lon_min, lon_max=lon_max, lat_min=lat_min, lat_max=lat_max)
 def infer_study_area_from_hotspots(
     hotspot_csv: Path,
     lon_col: str = "lon",
@@ -43,12 +58,15 @@ def infer_study_area_from_hotspots(
 ) -> StudyArea:
     """Infer a current-download bounding box from hotspot coordinates."""
     df = pd.read_csv(hotspot_csv)
-    return StudyArea(
+    area = StudyArea(
         lon_min=float(df[lon_col].min() - pad_deg),
         lon_max=float(df[lon_col].max() + pad_deg),
         lat_min=float(df[lat_col].min() - pad_deg),
         lat_max=float(df[lat_col].max() + pad_deg),
     )
+    area = validate_study_area(area)
+    print(f"[DEBUG] inferred StudyArea: {area}")
+    return area
 
 
 def write_earthdata_netrc(netrc_path: Path, username: str, password: str) -> Path:
@@ -278,6 +296,7 @@ def standardize_oscar_uv_netcdf(
     lat_name: str = "lat",
 ) -> Path:
     """Subset raw data, normalize lon to [-180,180], sort, then keep u/v only."""
+    area = validate_study_area(area)
     ds = xr.open_dataset(input_nc)
     lon_name, lat_name = _infer_lon_lat_names(ds, lon_name=lon_name, lat_name=lat_name)
     ds = _reconstruct_degree_coords(ds, lon_name=lon_name, lat_name=lat_name)
@@ -381,6 +400,8 @@ def download_oscar_for_periods(
 ) -> list[Path]:
     """Download one OSCAR file per period using PO.DAAC downloader logic."""
     outputs: list[Path] = []
+    area = validate_study_area(area)
+    print(f"[DEBUG] download StudyArea: {area}")
 
     for pstart, pend, pid in periods:
         existing = _raw_oscar_files(cfg.output_dir)
