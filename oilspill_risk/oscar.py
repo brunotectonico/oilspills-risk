@@ -157,8 +157,10 @@ def _infer_lon_lat_names(ds: xr.Dataset, lon_name: str, lat_name: str) -> tuple[
     lon_candidates = [lon_name, "longitude", "x", "lon"]
     lat_candidates = [lat_name, "latitude", "y", "lat"]
 
-    resolved_lon = next((n for n in lon_candidates if n in ds.coords or n in ds.variables), lon_name)
-    resolved_lat = next((n for n in lat_candidates if n in ds.coords or n in ds.variables), lat_name)
+    # resolved_lon = next((n for n in lon_candidates if n in ds.coords or n in ds.variables), lon_name)
+    # resolved_lat = next((n for n in lat_candidates if n in ds.coords or n in ds.variables), lat_name)
+    resolved_lon = next((n for n in lon_candidates if n in ds.dims), lon_name)
+    resolved_lat = next((n for n in lat_candidates if n in ds.dims), lat_name)
     return resolved_lon, resolved_lat
 
 
@@ -263,24 +265,32 @@ def standardize_oscar_uv_netcdf(
             raise KeyError(f"No U/V variables found. Variables: {list(ds.data_vars)}")
 
         # CRITICAL: 1. SUBSET RAW
-        raw_subset = _subset_lon_lat_robust(ds, area, lon_name, lat_name)
+        subset_raw = _subset_lon_lat_robust(ds, area, lon_name, lat_name)
+        subset_raw = subset_raw.set_coords([lon_name, lat_name])
         
         # 2. normalize lon to [-180, 180] and sort
-        subset_raw = subset_raw.assign_coords({lon_name: ((subset_raw[lon_name] + 180) % 360) - 180})
-        subset_raw = subset_raw.sortby(lon_name)
-        subset_raw = subset_raw.sortby(lat_name)
+        norm_subset = subset_raw.assign_coords({lon_name: ((subset_raw[lon_name] + 180) % 360) - 180})
+        norm_subset = norm_subset.sortby([lon_name, lat_name])
+
+        # CRS hints for GIS readers
+        norm_subset[lon_name].attrs.update({
+            "standard_name": "longitude", 
+            "units": "degrees_east",
+            "axis": "X"
+        })
+        norm_subset[lat_name].attrs.update({
+            "standard_name": "latitude", 
+            "units": "degrees_north",
+            "axis": "Y"
+        })
         
         # 3) select u and v only, replacing fill values with NaN for GIS stats
-        only_uv = subset_raw[[actual_u, actual_v]]
+        only_uv = norm_subset[[actual_u, actual_v]]
         for var_name in [actual_u, actual_v]:
             fill_value = only_uv[var_name].attrs.get("_FillValue")
             if fill_value is not None:
                 only_uv[var_name] = only_uv[var_name].where(only_uv[var_name] != fill_value)
         
-        # CRS hints for GIS readers
-        only_uv[lon_name].attrs.update({"standard_name": "longitude", "units": "degrees_east"})
-        only_uv[lat_name].attrs.update({"standard_name": "latitude", "units": "degrees_north"})
-    
         output_nc.parent.mkdir(parents=True, exist_ok=True)
         only_uv.to_netcdf(output_nc)
         finite_u = int(np.isfinite(only_uv[actual_u].values).sum())
