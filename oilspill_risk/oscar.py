@@ -142,6 +142,51 @@ def _to_360(lon: float) -> float:
     return lon % 360
 
 
+
+
+def _infer_lon_lat_names(ds: xr.Dataset, lon_name: str, lat_name: str) -> tuple[str, str]:
+    """Resolve lon/lat coordinate names from dataset contents and attrs."""
+    lon_candidates = [lon_name, "longitude", "x", "lon"]
+    lat_candidates = [lat_name, "latitude", "y", "lat"]
+
+    resolved_lon = next((n for n in lon_candidates if n in ds.coords or n in ds.variables), lon_name)
+    resolved_lat = next((n for n in lat_candidates if n in ds.coords or n in ds.variables), lat_name)
+    return resolved_lon, resolved_lat
+
+
+def _reconstruct_degree_coords(ds: xr.Dataset, lon_name: str, lat_name: str) -> xr.Dataset:
+    """Rebuild lon/lat degrees if dataset stores index-like coordinates."""
+    lon = np.asarray(ds[lon_name].values, dtype=float)
+    lat = np.asarray(ds[lat_name].values, dtype=float)
+
+    lon_index_like = np.allclose(lon, np.arange(lon.size))
+    lat_index_like = np.allclose(lat, np.arange(lat.size))
+
+    if lon_index_like:
+        glon_min = ds.attrs.get("geospatial_lon_min")
+        glon_max = ds.attrs.get("geospatial_lon_max")
+        glon_res = ds.attrs.get("geospatial_lon_resolution")
+        if glon_res is not None and isinstance(glon_res, str):
+            glon_res = float(glon_res.split()[0])
+        if glon_min is not None and glon_max is not None:
+            if glon_res is None:
+                glon_res = (float(glon_max) - float(glon_min)) / max(1, lon.size - 1)
+            lon = float(glon_min) + np.arange(lon.size) * float(glon_res)
+            ds = ds.assign_coords({lon_name: lon})
+
+    if lat_index_like:
+        glat_min = ds.attrs.get("geospatial_lat_min")
+        glat_max = ds.attrs.get("geospatial_lat_max")
+        glat_res = ds.attrs.get("geospatial_lat_resolution")
+        if glat_res is not None and isinstance(glat_res, str):
+            glat_res = float(glat_res.split()[0])
+        if glat_min is not None and glat_max is not None:
+            if glat_res is None:
+                glat_res = (float(glat_max) - float(glat_min)) / max(1, lat.size - 1)
+            lat = float(glat_min) + np.arange(lat.size) * float(glat_res)
+            ds = ds.assign_coords({lat_name: lat})
+
+    return ds
 def _subset_lon_lat_robust(ds: xr.Dataset, area: StudyArea, lon_name: str, lat_name: str) -> xr.Dataset:
     """Subset lon/lat robustly for descending coords and dateline-crossing ranges."""
     lon_vals = np.asarray(ds[lon_name].values)
@@ -192,6 +237,12 @@ def standardize_oscar_uv_netcdf(
 ) -> Path:
     """Subset raw data, normalize lon to [-180,180], sort, then keep u/v only."""
     ds = xr.open_dataset(input_nc)
+    lon_name, lat_name = _infer_lon_lat_names(ds, lon_name=lon_name, lat_name=lat_name)
+    ds = _reconstruct_degree_coords(ds, lon_name=lon_name, lat_name=lat_name)
+
+    print(f"[DEBUG] raw dims={dict(ds.dims)} lon_name={lon_name} lat_name={lat_name}")
+    print(f"[DEBUG] raw lon range=({float(ds[lon_name].min())},{float(ds[lon_name].max())})")
+    print(f"[DEBUG] raw lat range=({float(ds[lat_name].min())},{float(ds[lat_name].max())})")
 
     # 1) subset raw 0..360 (or -180..180) data first
     subset_raw = _subset_lon_lat_robust(ds, area, lon_name=lon_name, lat_name=lat_name)
@@ -199,6 +250,7 @@ def standardize_oscar_uv_netcdf(
     # 2) normalize lon to [-180, 180] and sort
     subset_raw = subset_raw.assign_coords({lon_name: ((subset_raw[lon_name] + 180) % 360) - 180})
     subset_raw = subset_raw.sortby(lon_name)
+    subset_raw = subset_raw.sortby(lat_name)
 
     # 3) select u and v only, replacing fill values with NaN for GIS stats
     only_uv = subset_raw[[u_var, v_var]]
