@@ -152,6 +152,51 @@ def _to_360(lon: float) -> float:
     return lon % 360
 
 
+def _infer_lon_lat_names(ds: xr.Dataset, lon_name: str, lat_name: str) -> tuple[str, str]:
+    """Resolve lon/lat coordinate names from dataset contents and attrs."""
+    lon_candidates = [lon_name, "longitude", "x", "lon"]
+    lat_candidates = [lat_name, "latitude", "y", "lat"]
+
+    resolved_lon = next((n for n in lon_candidates if n in ds.coords or n in ds.variables), lon_name)
+    resolved_lat = next((n for n in lat_candidates if n in ds.coords or n in ds.variables), lat_name)
+    return resolved_lon, resolved_lat
+
+
+def _reconstruct_degree_coords(ds: xr.Dataset, lon_name: str, lat_name: str) -> xr.Dataset:
+    """Rebuild lon/lat degrees if dataset stores index-like coordinates."""
+    lon = np.asarray(ds[lon_name].values, dtype=float)
+    lat = np.asarray(ds[lat_name].values, dtype=float)
+
+    lon_index_like = np.allclose(lon, np.arange(lon.size))
+    lat_index_like = np.allclose(lat, np.arange(lat.size))
+
+    if lon_index_like:
+        glon_min = ds.attrs.get("geospatial_lon_min")
+        glon_max = ds.attrs.get("geospatial_lon_max")
+        glon_res = ds.attrs.get("geospatial_lon_resolution")
+        if glon_res is not None and isinstance(glon_res, str):
+            glon_res = float(glon_res.split()[0])
+        if glon_min is not None and glon_max is not None:
+            if glon_res is None:
+                glon_res = (float(glon_max) - float(glon_min)) / max(1, lon.size - 1)
+            lon = float(glon_min) + np.arange(lon.size) * float(glon_res)
+            ds = ds.assign_coords({lon_name: lon})
+
+    if lat_index_like:
+        glat_min = ds.attrs.get("geospatial_lat_min")
+        glat_max = ds.attrs.get("geospatial_lat_max")
+        glat_res = ds.attrs.get("geospatial_lat_resolution")
+        if glat_res is not None and isinstance(glat_res, str):
+            glat_res = float(glat_res.split()[0])
+        if glat_min is not None and glat_max is not None:
+            if glat_res is None:
+                glat_res = (float(glat_max) - float(glat_min)) / max(1, lat.size - 1)
+            lat = float(glat_min) + np.arange(lat.size) * float(glat_res)
+            ds = ds.assign_coords({lat_name: lat})
+
+    return ds
+  
+  
 def _subset_lon_lat_robust(ds: xr.Dataset, area: StudyArea, lon_name: str, lat_name: str) -> xr.Dataset:
     """Subset lon/lat robustly for descending coords and dateline-crossing ranges."""
     lon_vals = np.asarray(ds[lon_name].values)
@@ -201,33 +246,49 @@ def standardize_oscar_uv_netcdf(
     lat_name: str = "lat",
 ) -> Path:
     """Subset raw data, normalize lon to [-180,180], sort, then keep u/v only."""
-    """Normalize longitude to [-180,180], sort longitude, then clip and keep u/v only."""
     ds = None
     try:
         ds = xr.open_dataset(input_nc)
+        lon_name, lat_name = _infer_lon_lat_names(ds, lon_name=lon_name, lat_name=lat_name)
+        ds = _reconstruct_degree_coords(ds, lon_name=lon_name, lat_name=lat_name)
 
-        # Automatic detection of coordinates
-        actual_lon = next((n for n in [lon_name, 'longitude', 'x', 'long'] if n in ds.dims), None)
-        actual_lat = next((n for n in [lat_name, 'latitude', 'y'] if n in ds.dims), None)
-        if not actual_lon or not actual_lat:
-            raise KeyError(f"No coordinates found. Variables present: {list(ds.dims)}")
-
+        print(f"[DEBUG] raw dims={dict(ds.dims)} lon_name={lon_name} lat_name={lat_name}")
+        print(f"[DEBUG] raw lon range=({float(ds[lon_name].min())},{float(ds[lon_name].max())})")
+        print(f"[DEBUG] raw lat range=({float(ds[lat_name].min())},{float(ds[lat_name].max())})")
+        
         # Automatic detection of variables (U/V)        
         actual_u = next((n for n in [u_var, 'u_current', 'ugos', 'u_curr'] if n in ds.data_vars), None)
         actual_v = next((n for n in [v_var, 'v_current', 'vgos', 'v_curr'] if n in ds.data_vars), None)
         if not actual_u or not actual_v:
             raise KeyError(f"No U/V variables found. Variables: {list(ds.data_vars)}")
 
-        # CRITICAL: 1. SUBSET RAW → 2. NORMALIZE → 3. u/v only
-        raw_subset = _subset_lon_lat_robust(ds, area, actual_lon, actual_lat)
-        lon_norm = ((raw_subset[actual_lon] + 180) % 360) - 180
-        norm_subset = raw_subset.assign_coords({actual_lon: lon_norm}).sortby(actual_lon)
-        only_uv = norm_subset[[actual_u, actual_v]]
+        # CRITICAL: 1. SUBSET RAW
+        raw_subset = _subset_lon_lat_robust(ds, area, lon_name, lat_name)
         
+        # 2. normalize lon to [-180, 180] and sort
+        subset_raw = subset_raw.assign_coords({lon_name: ((subset_raw[lon_name] + 180) % 360) - 180})
+        subset_raw = subset_raw.sortby(lon_name)
+        subset_raw = subset_raw.sortby(lat_name)
+        
+        # 3) select u and v only, replacing fill values with NaN for GIS stats
+        only_uv = subset_raw[[actual_u, actual_v]]
+        for var_name in [actual_u, actual_v]:
+            fill_value = only_uv[var_name].attrs.get("_FillValue")
+            if fill_value is not None:
+                only_uv[var_name] = only_uv[var_name].where(only_uv[var_name] != fill_value)
+        
+        # CRS hints for GIS readers
+        only_uv[lon_name].attrs.update({"standard_name": "longitude", "units": "degrees_east"})
+        only_uv[lat_name].attrs.update({"standard_name": "latitude", "units": "degrees_north"})
+    
         output_nc.parent.mkdir(parents=True, exist_ok=True)
         only_uv.to_netcdf(output_nc)
-        print(f"Output {output_nc}: u.shape={only_uv[actual_u].shape}")
-        
+        finite_u = int(np.isfinite(only_uv[actual_u].values).sum())
+        finite_v = int(np.isfinite(only_uv[actual_v].values).sum())
+        print(f"[DEBUG] standardized={output_nc.name} finite_u={finite_u} finite_v={finite_v}")
+                
+        ds.close()
+        subset_raw.close()
         only_uv.close()
         return output_nc
         
@@ -244,7 +305,6 @@ def seasonal_periods(
     season_length_months: int = 3,
 ) -> list[tuple[date, date, str]]:
     """Create non-overlapping seasonal windows starting from start_date.
-    
     Each window is exactly season_length_months long. Next window starts
     exactly after the previous one ends. Warns if any window is incomplete."""
     # From string (input) to datetime
@@ -310,7 +370,7 @@ def _raw_oscar_files(output_dir: Path) -> set[Path]:
         for p in output_dir.glob("*.nc")
         if "clip" not in p.name.lower() and p.name.lower().startswith("oscar")
     }
-  
+
 
 def download_oscar_for_periods(
     cfg: OscarDownloadConfig,
