@@ -29,7 +29,7 @@ This repository provides a modular coastal oil-spill risk screening workflow for
 
 5. **OSCAR download module**
    - Infers study-area bounds from hotspot CSV.
-   - Builds ERDDAP subset URLs and downloads NetCDF files for a bbox + time range.
+   - Builds and downloads NetCDF files for a bbox + time range following PO.DAAC logic.
    - Supports per-period downloads (e.g., one OSCAR file per 3-month seasonal window).
 
 ## Repository structure

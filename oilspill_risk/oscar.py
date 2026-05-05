@@ -8,7 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-
+import numpy as np
 import pandas as pd
 import xarray as xr
 
@@ -66,8 +66,8 @@ def build_podaac_downloader_cmd(
     collection: str,
     output_dir: Path,
     *,
-    start_date: date | None = None,
-    end_date: date | None = None,
+    start_date: str | None = None,#Assumes date already in string format (based in init.py)
+    end_date: str | None = None,
     bbox: StudyArea | None = None,
     provider: str | None = None,
     limit: int | None = None,
@@ -83,7 +83,7 @@ def build_podaac_downloader_cmd(
     ]
 
     if start_date is not None:
-        cmd += ["-sd", start_date] #Assumes date already in string format (based in init.py)
+        cmd += ["-sd", start_date] 
     if end_date is not None:
         cmd += ["-ed", end_date]
     if bbox is not None:
@@ -137,51 +137,40 @@ def run_podaac_downloader(
         dry_run=dry_run,
     )
 
-    try: # to handle errors in download
+try: # to handle errors in download
         return subprocess.run(cmd, check=True, text=True, capture_output=True, env=env)
     except subprocess.CalledProcessError as e:
         print(f"Error: {e.stdout}")
         print(f"Details: {e.stderr}") 
-        raise
+        raise    
 
 
-def build_erddap_subset_url(
-    cfg: OscarDownloadConfig,
-    area: StudyArea,
-    start_dt: datetime,
-    end_dt: datetime,
-) -> str:
-    """Build an ERDDAP griddap subset URL for OSCAR u/v variables."""
+def _subset_lon_lat_robust(ds: xr.Dataset, area: StudyArea, lon_name: str, lat_name: str) -> xr.Dataset:
+    """Subset lon/lat robustly for descending coords and dateline-crossing ranges."""
+    lon = ds[lon_name]
+    lat = ds[lat_name]
 
-    def _time_str(ts: datetime) -> str:
-        return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+    lon_vals = lon.values
+    lat_vals = lat.values
 
-    query = (
-        f"{cfg.u_var}[({_time_str(start_dt)}):1:({_time_str(end_dt)})]"
-        f"[({area.lat_min}):1:({area.lat_max})][({area.lon_min}):1:({area.lon_max})],"
-        f"{cfg.v_var}[({_time_str(start_dt)}):1:({_time_str(end_dt)})]"
-        f"[({area.lat_min}):1:({area.lat_max})][({area.lon_min}):1:({area.lon_max})]"
-    )
-    encoded = quote(query, safe="[]():,._-+")
-    return f"{cfg.base_griddap_url.rstrip('/')}/{cfg.dataset_id}.nc?{encoded}"
+    lon_min = ((area.lon_min + 180) % 360) - 180
+    lon_max = ((area.lon_max + 180) % 360) - 180
 
+    if lon_min <= lon_max:
+        lon_mask = (lon_vals >= lon_min) & (lon_vals <= lon_max)
+    else:
+        lon_mask = (lon_vals >= lon_min) | (lon_vals <= lon_max)
 
-def download_oscar_subset(
-    cfg: OscarDownloadConfig,
-    area: StudyArea,
-    start_dt: datetime,
-    end_dt: datetime,
-    output_name: str | None = None,
-) -> Path:
-    """Download a subsetted OSCAR NetCDF file for a study area and period."""
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    if output_name is None:
-        output_name = f"oscar_{start_dt:%Y%m%d}_{end_dt:%Y%m%d}.nc"
+    lat_lo = min(area.lat_min, area.lat_max)
+    lat_hi = max(area.lat_min, area.lat_max)
+    lat_mask = (lat_vals >= lat_lo) & (lat_vals <= lat_hi)
 
-    out_path = cfg.output_dir / output_name
-    url = build_erddap_subset_url(cfg=cfg, area=area, start_dt=start_dt, end_dt=end_dt)
-    urlretrieve(url, out_path)
-    return out_path
+    lon_idx = np.where(lon_mask)[0]
+    lat_idx = np.where(lat_mask)[0]
+    if lon_idx.size == 0 or lat_idx.size == 0:
+        raise ValueError("No grid cells found within requested lon/lat bounds")
+
+    return ds.isel({lon_name: lon_idx, lat_name: lat_idx})
 
 
 def standardize_oscar_uv_netcdf(
@@ -194,19 +183,14 @@ def standardize_oscar_uv_netcdf(
     lon_name: str = "lon",
     lat_name: str = "lat",
 ) -> Path:
-    """Normalize longitude to [-180,180], clip bbox, and keep only u/v variables."""
+    """Normalize longitude to [-180,180], sort longitude, then clip and keep u/v only."""
     ds = xr.open_dataset(input_nc)
 
-    lon = ds[lon_name]
-    lon_norm = ((lon + 180) % 360) - 180
+    lon_norm = ((ds[lon_name] + 180) % 360) - 180
     ds = ds.assign_coords({lon_name: lon_norm}).sortby(lon_name)
 
-    clipped = ds[[u_var, v_var]].sel(
-        {
-            lon_name: slice(area.lon_min, area.lon_max),
-            lat_name: slice(area.lat_min, area.lat_max),
-        }
-    )
+    only_uv = ds[[u_var, v_var]]
+    clipped = _subset_lon_lat_robust(only_uv, area, lon_name=lon_name, lat_name=lat_name)
 
     output_nc.parent.mkdir(parents=True, exist_ok=True)
     clipped.to_netcdf(output_nc)
@@ -222,7 +206,6 @@ def seasonal_periods(
     season_length_months: int = 3,
 ) -> list[tuple[date, date, str]]:
     """Create year-based seasonal windows (e.g., 3-month periods)."""
-
     # From string (input) to datetime
     # Should be the following format: 2020-01-01T00:00:00Z
     fmt = '%Y-%m-%dT%H:%M:%SZ'
@@ -262,12 +245,14 @@ def download_oscar_for_periods(
 
     for pstart, pend, pid in periods:
         existing = {p.resolve() for p in cfg.output_dir.glob("*.nc")}
+
+        downloader_bbox = None if standardize else area
         run_podaac_downloader(
             collection=cfg.podaac_collection,
             output_dir=cfg.output_dir,
             start_date=pstart,
             end_date=pend,
-            bbox=area,
+            bbox=downloader_bbox,
             dry_run=False,
         )
 
