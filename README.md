@@ -29,7 +29,7 @@ This repository provides a modular coastal oil-spill risk screening workflow for
 
 5. **OSCAR download module**
    - Infers study-area bounds from hotspot CSV.
-   - Builds ERDDAP subset URLs and downloads NetCDF files for a bbox + time range.
+   - Builds and downloads NetCDF files for a bbox + time range following PO.DAAC logic.
    - Supports per-period downloads (e.g., one OSCAR file per 3-month seasonal window).
 
 ## Repository structure
@@ -77,8 +77,8 @@ bbox = StudyArea(lon_min=40.0, lon_max=45.0, lat_min=10.0, lat_max=14.0)
 result = run_podaac_downloader(
     collection="OSCAR_L4_OC_FINAL_V2.0",
     output_dir=Path("oscar_downloads"),
-    start_date=date(2020, 1, 1),
-    end_date=date(2020, 3, 31),
+    start_date=datetime(2020, 1, 1, 0, 0, 0).strftime('%Y-%m-%dT%H:%M:%SZ'), #dates should be strings in YYYYMMDDhhmmssZ format
+    end_date=datetime(2020, 3, 31, 23, 59, 59).strftime('%Y-%m-%dT%H:%M:%SZ'),
     bbox=bbox,
     dry_run=True,
 )
@@ -100,8 +100,8 @@ from oilspill_risk.oscar import (
 
 area = infer_study_area_from_hotspots(Path("gmtds_tanker_hotspots_multi.csv"), pad_deg=0.7)
 periods = seasonal_periods(
-    start_date=date(2019, 1, 1),
-    end_date=date(2021, 12, 31),
+    start_date=datetime(2019, 1, 1, 0, 0, 0).strftime('%Y-%m-%dT%H:%M:%SZ'), #dates should be strings in YYYYMMDDhhmmssZ format
+    end_date=datetime(2021, 12, 31, 23, 59, 59).strftime('%Y-%m-%dT%H:%M:%SZ'),
     season_start_month=1,
     season_length_months=3,
 )

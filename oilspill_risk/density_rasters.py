@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import rasterio
 
+import logging # Added to debug
+LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class RasterGroup:
@@ -46,11 +48,12 @@ class MeanRasterAggregator:
         written: list[Path] = []
 
         for key in sorted(self._sum):
-            mean_density = np.where(
-                self._count[key] > 0,
-                self._sum[key] / self._count[key],
-                np.nan,
-            ).astype("float32")
+            count = self._count[key]
+            if not np.any(count > 0):
+                LOGGER.warning("Skipping empty group %s", key)
+                continue
+            mean_density = np.full_like(self._sum[key], np.nan, dtype="float32")
+            np.divide(self._sum[key], count, out=mean_density, where=count > 0)
 
             out_path = output_dir / self._filename.get(key, f"mean_density_{key}.tif")
             with rasterio.open(
