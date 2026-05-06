@@ -37,13 +37,13 @@ This repository provides a modular coastal oil-spill risk screening workflow for
 
 ## Repository structure
 
-- `density_hotspots.py`  
+- `density_hotspots.py`
   CLI wrapper for hotspot extraction.
-- `oilspill_risk/hotspots.py`  
+- `oilspill_risk/hotspots.py`
   Reusable hotspot detection and outputs.
-- `oilspill_risk/density_rasters.py`  
+- `oilspill_risk/density_rasters.py`
   Separate mean-density raster aggregation module.
-- `oilspill_risk/trajectory.py`  
+- `oilspill_risk/trajectory.py`
   Reusable trajectory simulation and coastal risk scoring primitives.
 - `oilspill_risk/models.py`
   OSCAR `StudyArea`, `OscarDownloadConfig`, and study-area helpers.
@@ -57,8 +57,21 @@ This repository provides a modular coastal oil-spill risk screening workflow for
   High-level OSCAR period download and optional standardization workflow.
 - `oilspill_risk/oscar.py`
   Compatibility imports for existing notebooks/scripts.
-- `hotspots4density.ipynb`  
+- `hotspots4density.ipynb`
   Notebook exploration.
+
+## Study area used for OSCAR Red Sea / Djibouti tests
+
+```python
+from oilspill_risk.oscar import StudyArea
+
+area = StudyArea(
+    lon_min=41.50803970311112,
+    lon_max=45.69349690701655,
+    lat_min=9.72568026223306,
+    lat_max=14.679851304878618,
+)
+```
 
 ## Run hotspot extraction
 
@@ -71,7 +84,6 @@ python density_hotspots.py /path/to/gmtds_data \
   --season-length-months 3
 ```
 
-
 ## Secure Earthdata auth with PO.DAAC downloader
 
 For the `podaac-data-downloader` mode (from `podaac/data-subscriber`), avoid hardcoding credentials in scripts.
@@ -81,61 +93,44 @@ Recommended pattern:
 - Call `run_podaac_downloader(...)`; the helper writes a local netrc with restricted permissions and runs the CLI.
 
 ```python
-from datetime import date
 from pathlib import Path
-
-from oilspill_risk.oscar import StudyArea, run_podaac_downloader
+from oilspill_risk.gridding import export_oscar_uv_geotiff, standardize_oscar_uv_netcdf
+from oilspill_risk.models import StudyArea
 
 bbox = StudyArea(lon_min=41.5, lon_max=45.75, lat_min=9.75, lat_max=14.75)
 result = run_podaac_downloader(
     collection="OSCAR_L4_OC_FINAL_V2.0",
     output_dir=Path("oscar_downloads"),
-    start_date=datetime(2020, 1, 1, 0, 0, 0).strftime('%Y-%m-%dT%H:%M:%SZ'), #dates should be strings in YYYYMMDDhhmmssZ format
-    end_date=datetime(2020, 3, 31, 23, 59, 59).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    start_date="2020-01-01T00:00:00Z",
+    end_date="2020-01-03T23:59:59Z",
     bbox=bbox,
     dry_run=True,
 )
 print(result.stdout)
 ```
 
-## Example OSCAR period downloads
+## Standardize the already downloaded OSCAR NetCDF files
+
+The downloaded OSCAR final files should be standardized from the global grid, not clipped by the downloader first.  This keeps the original global coordinate metadata available for reconstructing true degree coordinates before the local clip and GeoTIFF export.
 
 ```python
-from datetime import date
 from pathlib import Path
+from oilspill_risk.oscar import StudyArea, export_oscar_uv_geotiff, standardize_oscar_uv_netcdf
 
-from oilspill_risk.oscar import (
-    OscarDownloadConfig,
-    download_oscar_for_periods,
-    infer_study_area_from_hotspots,
-    seasonal_periods,
-)
-
-area = infer_study_area_from_hotspots(Path("gmtds_tanker_hotspots_multi.csv"), pad_deg=0.7)
-periods = seasonal_periods(
-    start_date=datetime(2019, 1, 1, 0, 0, 0).strftime('%Y-%m-%dT%H:%M:%SZ'), #dates should be strings in YYYYMMDDhhmmssZ format
-    end_date=datetime(2021, 12, 31, 23, 59, 59).strftime('%Y-%m-%dT%H:%M:%SZ'),
-    season_start_month=1,
-    season_length_months=3,
-)
-
-cfg = OscarDownloadConfig(
-    output_dir=Path("oscar_subsets"),
-    podaac_collection="OSCAR_L4_OC_FINAL_V2.0",
-)
-
-downloaded = download_oscar_for_periods(cfg, area, periods, standardize=True)
+area = StudyArea(lon_min=41.5, lon_max=45.75, lat_min=9.75, lat_max=14.75)
+for raw_nc in sorted(Path("files").glob("oscar_currents_final_*.nc")):
+    date_id = raw_nc.stem.rsplit("_", 1)[-1]
+    clipped_nc = raw_nc.with_name(f"oscar_uv_clip_{date_id}.nc")
+    standardize_oscar_uv_netcdf(raw_nc, clipped_nc, area)
+    export_oscar_uv_geotiff(clipped_nc, raw_nc.parent, area)
 ```
 
+### NetCDF / GeoTIFF coordinate-placement notes
 
-### NetCDF standardization for GIS and trajectory
-
-If OSCAR files are in `0..360` longitude and appear twisted in GIS:
-- use `standardize_oscar_uv_netcdf(...)` to normalize longitude to `-180..180`,
-- clip to your hotspot study area,
-- and keep only `u` and `v` variables for trajectory runs.
-
-You can then load currents directly into the trajectory module with `current_field_from_netcdf(...)`.
+- `standardize_oscar_uv_netcdf(...)` reconstructs index-like OSCAR coordinates from `geospatial_*` metadata before clipping.
+- Longitudes are normalized to `[-180, 180]`, and latitude/longitude axes are sorted before writing.
+- GeoTIFFs are written north-up using a transform derived from coordinate **centers** expanded by half a grid cell. This avoids the half-cell placement error caused by using center min/max values as raster bounds.
+- The GeoTIFF write flips rows vertically only when latitude is stored south-to-north; it does **not** flip columns, which would mirror the Red Sea/Djibouti subset east-west.
 
 ## Still to complete
 

@@ -94,8 +94,8 @@ Recommended pattern:
 
 ```python
 from pathlib import Path
-
-from oilspill_risk.oscar import StudyArea, run_podaac_downloader
+from oilspill_risk.gridding import export_oscar_uv_geotiff, standardize_oscar_uv_netcdf
+from oilspill_risk.models import StudyArea
 
 bbox = StudyArea(lon_min=41.5, lon_max=45.75, lat_min=9.75, lat_max=14.75)
 result = run_podaac_downloader(
@@ -117,10 +117,7 @@ The downloaded OSCAR final files should be standardized from the global grid, no
 from pathlib import Path
 from oilspill_risk.oscar import StudyArea, export_oscar_uv_geotiff, standardize_oscar_uv_netcdf
 
-from oilspill_risk.oscar import StudyArea, export_oscar_uv_geotiff, standardize_oscar_uv_netcdf
-
 area = StudyArea(lon_min=41.5, lon_max=45.75, lat_min=9.75, lat_max=14.75)
-
 for raw_nc in sorted(Path("files").glob("oscar_currents_final_*.nc")):
     date_id = raw_nc.stem.rsplit("_", 1)[-1]
     clipped_nc = raw_nc.with_name(f"oscar_uv_clip_{date_id}.nc")

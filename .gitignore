@@ -1,6 +1,5 @@
 # Temporal directory with tifs
 temp_gmtds_extract/
-oscar_downloads/
 # Python and notebook-generated files
 __pycache__/
 *.py[cod]
