@@ -27,10 +27,13 @@ This repository provides a modular coastal oil-spill risk screening workflow for
    - Simplified weathering as daily bulk mass loss (default 30%/day).
    - Composite score: `density_factor × coastal_hit_fraction × survival_fraction`.
 
-5. **OSCAR download module**
-   - Infers study-area bounds from hotspot CSV.
-   - Downloads NetCDF files for a bbox + time range following PO.DAAC logic.
-   - Supports per-period downloads (e.g., one OSCAR file per 3-month seasonal window).
+5. **Modular OSCAR download and grid-processing workflow**
+   - Shared dataclasses and study-area validation live in `oilspill_risk/models.py`.
+   - Date windows live in `oilspill_risk/periods.py`.
+   - PO.DAAC command/auth helpers live in `oilspill_risk/podaac.py`.
+   - Longitude/latitude reconstruction, clipping, and GeoTIFF export live in `oilspill_risk/gridding.py`.
+   - Period download orchestration lives in `oilspill_risk/oscar_workflow.py`.
+   - `oilspill_risk/oscar.py` remains as a backward-compatible facade.
 
 ## Repository structure
 
@@ -42,8 +45,18 @@ This repository provides a modular coastal oil-spill risk screening workflow for
   Separate mean-density raster aggregation module.
 - `oilspill_risk/trajectory.py`  
   Reusable trajectory simulation and coastal risk scoring primitives.
-- `oilspill_risk/oscar.py`  
-  OSCAR study-area inference, ERDDAP URL generation, and period-based NetCDF downloads.
+- `oilspill_risk/models.py`
+  OSCAR `StudyArea`, `OscarDownloadConfig`, and study-area helpers.
+- `oilspill_risk/periods.py`
+  Month-aligned period generation for downloads/exports.
+- `oilspill_risk/podaac.py`
+  PO.DAAC downloader command construction and Earthdata `.netrc` setup.
+- `oilspill_risk/gridding.py`
+  OSCAR coordinate standardization, clipping, and north-up EPSG:4326 GeoTIFF export.
+- `oilspill_risk/oscar_workflow.py`
+  High-level OSCAR period download and optional standardization workflow.
+- `oilspill_risk/oscar.py`
+  Compatibility imports for existing notebooks/scripts.
 - `hotspots4density.ipynb`  
   Notebook exploration.
 
@@ -73,7 +86,7 @@ from pathlib import Path
 
 from oilspill_risk.oscar import StudyArea, run_podaac_downloader
 
-bbox = StudyArea(lon_min=40.0, lon_max=45.0, lat_min=10.0, lat_max=14.0)
+bbox = StudyArea(lon_min=41.5, lon_max=45.75, lat_min=9.75, lat_max=14.75)
 result = run_podaac_downloader(
     collection="OSCAR_L4_OC_FINAL_V2.0",
     output_dir=Path("oscar_downloads"),
@@ -107,7 +120,7 @@ periods = seasonal_periods(
 )
 
 cfg = OscarDownloadConfig(
-    output_dir=Path("oscar_downloads"),
+    output_dir=Path("oscar_subsets"),
     podaac_collection="OSCAR_L4_OC_FINAL_V2.0",
 )
 

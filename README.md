@@ -97,7 +97,7 @@ from pathlib import Path
 
 from oilspill_risk.oscar import StudyArea, run_podaac_downloader
 
-bbox = StudyArea(lon_min=41.50803970311112, lon_max=45.69349690701655, lat_min=9.72568026223306, lat_max=14.679851304878618)
+bbox = StudyArea(lon_min=41.5, lon_max=45.75, lat_min=9.75, lat_max=14.75)
 result = run_podaac_downloader(
     collection="OSCAR_L4_OC_FINAL_V2.0",
     output_dir=Path("oscar_downloads"),
@@ -115,15 +115,11 @@ The downloaded OSCAR final files should be standardized from the global grid, no
 
 ```python
 from pathlib import Path
+from oilspill_risk.oscar import StudyArea, export_oscar_uv_geotiff, standardize_oscar_uv_netcdf
 
 from oilspill_risk.oscar import StudyArea, export_oscar_uv_geotiff, standardize_oscar_uv_netcdf
 
-area = StudyArea(
-    lon_min=41.50803970311112,
-    lon_max=45.69349690701655,
-    lat_min=9.72568026223306,
-    lat_max=14.679851304878618,
-)
+area = StudyArea(lon_min=41.5, lon_max=45.75, lat_min=9.75, lat_max=14.75)
 
 for raw_nc in sorted(Path("files").glob("oscar_currents_final_*.nc")):
     date_id = raw_nc.stem.rsplit("_", 1)[-1]
