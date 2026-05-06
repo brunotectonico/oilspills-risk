@@ -153,14 +153,53 @@ def _to_360(lon: float) -> float:
 
 
 def _infer_lon_lat_names(ds: xr.Dataset, lon_name: str, lat_name: str) -> tuple[str, str]:
-    """Resolve lon/lat coordinate names from dataset contents and attrs."""
-    lon_candidates = [lon_name, "longitude", "x", "lon"]
-    lat_candidates = [lat_name, "latitude", "y", "lat"]
+    """Resolve lon/lat coordinate names from dataset contents and metadata."""
 
-    # resolved_lon = next((n for n in lon_candidates if n in ds.coords or n in ds.variables), lon_name)
-    # resolved_lat = next((n for n in lat_candidates if n in ds.coords or n in ds.variables), lat_name)
-    resolved_lon = next((n for n in lon_candidates if n in ds.dims), lon_name)
-    resolved_lat = next((n for n in lat_candidates if n in ds.dims), lat_name)
+    def _is_lon(var_key: str, var_obj: xr.DataArray | xr.Variable) -> bool:
+        attrs = getattr(var_obj, "attrs", {})
+        std = str(attrs.get("standard_name", "")).lower()
+        units = str(attrs.get("units", "")).lower()
+        name = str(var_key).lower()
+        return (
+            "longitude" in std
+            or "degrees_east" in units
+            or name in {"lon", "longitude", "x"}
+        )
+
+    def _is_lat(var_key: str, var_obj: xr.DataArray | xr.Variable) -> bool:
+        attrs = getattr(var_obj, "attrs", {})
+        std = str(attrs.get("standard_name", "")).lower()
+        units = str(attrs.get("units", "")).lower()
+        name = str(var_key).lower()
+        return (
+            "latitude" in std
+            or "degrees_north" in units
+            or name in {"lat", "latitude", "y"}
+        )
+
+    merged = {**dict(ds.coords.items()), **dict(ds.variables.items())}
+
+    lon_found = [k for k, v in merged.items() if _is_lon(k, v)]
+    lat_found = [k for k, v in merged.items() if _is_lat(k, v)]
+
+    resolved_lon = lon_found[0] if lon_found else lon_name
+    resolved_lat = lat_found[0] if lat_found else lat_name
+
+    # fallback to explicit names if both got same var by loose matching
+    # if resolved_lon == resolved_lat:
+    #     if lon_name in ds.dims:
+    #         resolved_lon = lon_name
+    #     if lat_name in ds.dims:
+    #         resolved_lat = lat_name
+    if resolved_lon == resolved_lat:
+        if lon_name in ds.variables or lon_name in ds.coords:
+            resolved_lon = lon_name
+        if lat_name in ds.variables or lat_name in ds.coords:
+            resolved_lat = lat_name
+            
+    if resolved_lon == resolved_lat:
+        raise ValueError(f"Could not reliably infer lon/lat coordinate names (got {resolved_lon})")
+
     return resolved_lon, resolved_lat
 
 
@@ -201,8 +240,15 @@ def _reconstruct_degree_coords(ds: xr.Dataset, lon_name: str, lat_name: str) -> 
   
 def _subset_lon_lat_robust(ds: xr.Dataset, area: StudyArea, lon_name: str, lat_name: str) -> xr.Dataset:
     """Subset lon/lat robustly for descending coords and dateline-crossing ranges."""
+    if lon_name not in ds.variables and lon_name not in ds.coords and lon_name not in ds.dims:
+        raise KeyError(f"Longitude coordinate '{lon_name}' not found. Available: {list(ds.variables)}")
+    if lat_name not in ds.variables and lat_name not in ds.coords and lat_name not in ds.coords:
+        raise KeyError(f"Latitude coordinate '{lat_name}' not found. Available: {list(ds.variables)}")
+    
     lon_vals = np.asarray(ds[lon_name].values)
     lat_vals = np.asarray(ds[lat_name].values)
+    lon_dim = ds[lon_name].dims[0]
+    lat_dim = ds[lat_name].dims[0]
 
     lon_uses_360 = float(np.nanmax(lon_vals)) > 180.0
     if lon_uses_360:
@@ -226,7 +272,7 @@ def _subset_lon_lat_robust(ds: xr.Dataset, area: StudyArea, lon_name: str, lat_n
     if lon_idx.size == 0 or lat_idx.size == 0:
         raise ValueError("No grid cells found within requested lon/lat bounds")
 
-    return ds.isel({lon_name: lon_idx, lat_name: lat_idx})
+    return ds.isel({lon_dim: lon_idx, lat_dim: lat_idx})
 
 
 def _extract_data_date(raw_file: Path) -> str:
@@ -266,23 +312,27 @@ def standardize_oscar_uv_netcdf(
 
         # CRITICAL: 1. SUBSET RAW
         subset_raw = _subset_lon_lat_robust(ds, area, lon_name, lat_name)
-        subset_raw = subset_raw.set_coords([lon_name, lat_name])
+        # subset_raw = subset_raw.set_coords([lon_name, lat_name])
         
         # 2. normalize lon to [-180, 180] and sort
         norm_subset = subset_raw.assign_coords({lon_name: ((subset_raw[lon_name] + 180) % 360) - 180})
-        norm_subset = norm_subset.sortby([lon_name, lat_name])
+        norm_subset = norm_subset.sortby(lon_name)
+        norm_subset = norm_subset.sortby(lat_name)
 
-        # CRS hints for GIS readers
-        norm_subset[lon_name].attrs.update({
-            "standard_name": "longitude", 
-            "units": "degrees_east",
-            "axis": "X"
-        })
-        norm_subset[lat_name].attrs.update({
-            "standard_name": "latitude", 
-            "units": "degrees_north",
-            "axis": "Y"
-        })
+        # enforce canonical GIS-friendly coord names and dimensions 
+        lon_dim = norm_subset[lon_name].dims[0]
+        lat_dim = norm_subset[lat_name].dims[0]
+        rename_map = {}
+        if lon_dim != "lon":
+            rename_map[lon_dim] = "lon"
+        if lat_dim != "lat":
+            rename_map[lat_dim] = "lat"
+        if lon_name != "lon":
+            rename_map[lon_name] = "lon"
+        if lat_name != "lat":
+            rename_map[lat_name] = "lat"
+        if rename_map:
+            norm_subset = norm_subset.rename(rename_map)
         
         # 3) select u and v only, replacing fill values with NaN for GIS stats
         only_uv = norm_subset[[actual_u, actual_v]]
@@ -290,6 +340,11 @@ def standardize_oscar_uv_netcdf(
             fill_value = only_uv[var_name].attrs.get("_FillValue")
             if fill_value is not None:
                 only_uv[var_name] = only_uv[var_name].where(only_uv[var_name] != fill_value)
+            # only_uv[var_name].attrs["coordinates"] = "lon lat"
+            
+        # CRS hints for GIS readers
+        only_uv["lon"].attrs.update({"standard_name": "longitude", "units": "degrees_east", "axis": "X"})
+        only_uv["lat"].attrs.update({"standard_name": "latitude", "units": "degrees_north", "axis": "Y"})
         
         output_nc.parent.mkdir(parents=True, exist_ok=True)
         only_uv.to_netcdf(output_nc)
