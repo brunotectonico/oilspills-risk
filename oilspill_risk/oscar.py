@@ -53,6 +53,8 @@ def validate_study_area(area: StudyArea) -> StudyArea:
         raise ValueError("StudyArea bounds collapse to zero width/height")
 
     return StudyArea(lon_min=lon_min, lon_max=lon_max, lat_min=lat_min, lat_max=lat_max)
+
+    
 def infer_study_area_from_hotspots(
     hotspot_csv: Path,
     lon_col: str = "lon",
