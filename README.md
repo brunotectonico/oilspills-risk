@@ -152,6 +152,25 @@ for raw_nc in sorted(Path("files").glob("oscar_currents_final_*.nc")):
 - GeoTIFFs are written north-up using a transform derived from coordinate **centers** expanded by half a grid cell. This avoids the half-cell placement error caused by using center min/max values as raster bounds.
 - The GeoTIFF write flips rows vertically only when latitude is stored south-to-north; it does **not** flip columns, which would mirror the Red Sea/Djibouti subset east-west.
 
+### Which current format should trajectories use?
+
+For the current `trajectory.py` workflow, either NetCDF or GeoTIFF can be loaded into the same `CurrentField` structure. Use NetCDF when you want to preserve time slices or average across time; use paired U/V GeoTIFFs when you want the currents to follow the same QGIS/GDAL raster conventions as marine-traffic density rasters.
+
+```python
+from pathlib import Path
+
+from oilspill_risk.trajectory import current_field_from_geotiff, current_field_from_netcdf
+
+# QGIS/GDAL-style raster workflow, aligned with traffic-density rasters
+currents_from_raster = current_field_from_geotiff(
+    Path("files/oscar_uv_clip_20200101_u.tif"),
+    Path("files/oscar_uv_clip_20200101_v.tif"),
+)
+
+# NetCDF workflow, useful when retaining the time dimension
+currents_from_netcdf = current_field_from_netcdf(Path("files/oscar_uv_clip_20200101.nc"))
+```
+
 ## Still to complete
 
 - Robust OSCAR provider defaults (dataset IDs/URLs can vary by server).
