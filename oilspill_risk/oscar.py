@@ -8,6 +8,9 @@ import stat
 import subprocess
 import warnings
 
+import rasterio
+from rasterio.transform import from_bounds
+
 from dataclasses import dataclass
 from datetime import date, datetime
 from calendar import monthrange
@@ -37,6 +40,19 @@ class OscarDownloadConfig:
     v_var: str = "v"
 
 
+def validate_study_area(area: StudyArea) -> StudyArea:
+    """Validate and normalize StudyArea bounds."""
+    lon_min, lon_max = sorted([float(area.lon_min), float(area.lon_max)])
+    lat_min, lat_max = sorted([float(area.lat_min), float(area.lat_max)])
+
+    if not (-180.0 <= lon_min <= 360.0 and -180.0 <= lon_max <= 360.0):
+        raise ValueError(f"Invalid longitude bounds: {lon_min}, {lon_max}")
+    if not (-90.0 <= lat_min <= 90.0 and -90.0 <= lat_max <= 90.0):
+        raise ValueError(f"Invalid latitude bounds: {lat_min}, {lat_max}")
+    if lon_min == lon_max or lat_min == lat_max:
+        raise ValueError("StudyArea bounds collapse to zero width/height")
+
+    return StudyArea(lon_min=lon_min, lon_max=lon_max, lat_min=lat_min, lat_max=lat_max)
 def infer_study_area_from_hotspots(
     hotspot_csv: Path,
     lon_col: str = "lon",
@@ -45,12 +61,15 @@ def infer_study_area_from_hotspots(
 ) -> StudyArea:
     """Infer a current-download bounding box from hotspot coordinates."""
     df = pd.read_csv(hotspot_csv)
-    return StudyArea(
+    area = StudyArea(
         lon_min=float(df[lon_col].min() - pad_deg),
         lon_max=float(df[lon_col].max() + pad_deg),
         lat_min=float(df[lat_col].min() - pad_deg),
         lat_max=float(df[lat_col].max() + pad_deg),
     )
+    area = validate_study_area(area)
+    print(f"[DEBUG] inferred StudyArea: {area}")
+    return area
 
 
 def write_earthdata_netrc(netrc_path: Path, username: str, password: str) -> Path:
@@ -148,6 +167,7 @@ def run_podaac_downloader(
         print(f"Details: {e.stderr}") 
         raise    
 
+        
 def _to_360(lon: float) -> float:
     return lon % 360
 
@@ -436,6 +456,67 @@ def _raw_oscar_files(output_dir: Path) -> set[Path]:
         if "clip" not in p.name.lower() and p.name.lower().startswith("oscar")
     }
 
+  
+def export_oscar_uv_geotiff(
+    input_nc: Path,
+    output_dir: Path,
+    area: StudyArea,
+    *,
+    u_var: str = "u",
+    v_var: str = "v",
+) -> tuple[Path, Path]:
+    """Alternative output for GIS: export clipped U/V as GeoTIFF rasters."""
+    area = validate_study_area(area)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    ds = xr.open_dataset(input_nc)
+    lon_name, lat_name = _infer_lon_lat_names(ds, lon_name="lon", lat_name="lat")
+    ds = _reconstruct_degree_coords(ds, lon_name=lon_name, lat_name=lat_name)
+
+    subset = _subset_lon_lat_robust(ds, area, lon_name=lon_name, lat_name=lat_name)
+    subset = subset.assign_coords({lon_name: ((subset[lon_name] + 180) % 360) - 180}).sortby(lon_name).sortby(lat_name)
+
+    if lon_name != "lon" or lat_name != "lat":
+        subset = subset.rename({lon_name: "lon", lat_name: "lat"})
+
+    if "time" in subset[u_var].dims:
+        subset_u = subset[u_var].isel(time=0)
+        subset_v = subset[v_var].isel(time=0)
+    else:
+        subset_u = subset[u_var]
+        subset_v = subset[v_var]
+
+    fill_u = subset_u.attrs.get("_FillValue")
+    fill_v = subset_v.attrs.get("_FillValue")
+    if fill_u is not None:
+        subset_u = subset_u.where(subset_u != fill_u)
+    if fill_v is not None:
+        subset_v = subset_v.where(subset_v != fill_v)
+        
+    lon = subset_u["lon"].values
+    lat = subset_u["lat"].values
+    width = lon.size
+    height = lat.size
+    transform = from_bounds(float(lon.min()), float(lat.min()), float(lon.max()), float(lat.max()), width, height)
+
+    u_path = output_dir / f"{input_nc.stem}_{u_var}.tif"
+    v_path = output_dir / f"{input_nc.stem}_{v_var}.tif"
+
+    with rasterio.open(
+        u_path, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype="float32", crs="EPSG:4326", transform=transform, nodata=np.nan
+    ) as dst:
+        dst.write(np.flipud(subset_u.values.astype("float32")), 1)
+
+    with rasterio.open(
+        v_path, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype="float32", crs="EPSG:4326", transform=transform, nodata=np.nan
+    ) as dst:
+        dst.write(np.flipud(subset_v.values.astype("float32")), 1)
+
+    ds.close()
+    print(f"[DEBUG] wrote GeoTIFFs: {u_path.name}, {v_path.name}")
+    return u_path, v_path      
 
 def download_oscar_for_periods(
     cfg: OscarDownloadConfig,
@@ -446,6 +527,8 @@ def download_oscar_for_periods(
 ) -> list[Path]:
     """Download OSCAR files for period using PO.DAAC downloader logic."""
     outputs: list[Path] = []
+    area = validate_study_area(area)
+    print(f"[DEBUG] download StudyArea: {area}")
 
     for pstart, pend, pid in periods:
         existing = _raw_oscar_files(cfg.output_dir)
