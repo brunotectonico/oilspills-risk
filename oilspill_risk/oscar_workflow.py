@@ -1,4 +1,10 @@
-"""High-level OSCAR download and standardization workflow."""
+"""High-level OSCAR download and standardization workflow.
+
+The implementation is split across focused modules:
+``models.py`` for shared dataclasses, ``periods.py`` for date windows,
+``podaac.py`` for downloader calls, ``gridding.py`` for NetCDF/GeoTIFF grid
+handling, and ``oscar_workflow.py`` for high-level orchestration.
+"""
 
 from __future__ import annotations
 
