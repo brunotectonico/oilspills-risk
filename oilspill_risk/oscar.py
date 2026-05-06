@@ -387,6 +387,71 @@ def standardize_oscar_uv_netcdf(
     return output_nc
 
 
+
+
+def export_oscar_uv_geotiff(
+    input_nc: Path,
+    output_dir: Path,
+    area: StudyArea,
+    *,
+    u_var: str = "u",
+    v_var: str = "v",
+) -> tuple[Path, Path]:
+    """Alternative output for GIS: export clipped U/V as GeoTIFF rasters."""
+    area = validate_study_area(area)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    ds = xr.open_dataset(input_nc)
+    lon_name, lat_name = _infer_lon_lat_names(ds, lon_name="lon", lat_name="lat")
+    ds = _reconstruct_degree_coords(ds, lon_name=lon_name, lat_name=lat_name)
+
+    subset = _subset_lon_lat_robust(ds, area, lon_name=lon_name, lat_name=lat_name)
+    subset = subset.assign_coords({lon_name: ((subset[lon_name] + 180) % 360) - 180}).sortby(lon_name).sortby(lat_name)
+
+    if lon_name != "lon" or lat_name != "lat":
+        subset = subset.rename({lon_name: "lon", lat_name: "lat"})
+
+    if "time" in subset[u_var].dims:
+        subset_u = subset[u_var].isel(time=0)
+        subset_v = subset[v_var].isel(time=0)
+    else:
+        subset_u = subset[u_var]
+        subset_v = subset[v_var]
+
+    fill_u = subset_u.attrs.get("_FillValue")
+    fill_v = subset_v.attrs.get("_FillValue")
+    if fill_u is not None:
+        subset_u = subset_u.where(subset_u != fill_u)
+    if fill_v is not None:
+        subset_v = subset_v.where(subset_v != fill_v)
+
+    import rasterio
+    from rasterio.transform import from_bounds
+
+    lon = subset_u["lon"].values
+    lat = subset_u["lat"].values
+    width = lon.size
+    height = lat.size
+    transform = from_bounds(float(lon.min()), float(lat.min()), float(lon.max()), float(lat.max()), width, height)
+
+    u_path = output_dir / f"{input_nc.stem}_{u_var}.tif"
+    v_path = output_dir / f"{input_nc.stem}_{v_var}.tif"
+
+    with rasterio.open(
+        u_path, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype="float32", crs="EPSG:4326", transform=transform, nodata=np.nan
+    ) as dst:
+        dst.write(np.flipud(subset_u.values.astype("float32")), 1)
+
+    with rasterio.open(
+        v_path, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype="float32", crs="EPSG:4326", transform=transform, nodata=np.nan
+    ) as dst:
+        dst.write(np.flipud(subset_v.values.astype("float32")), 1)
+
+    ds.close()
+    print(f"[DEBUG] wrote GeoTIFFs: {u_path.name}, {v_path.name}")
+    return u_path, v_path
 def seasonal_periods(
     start_date: date,
     end_date: date,
