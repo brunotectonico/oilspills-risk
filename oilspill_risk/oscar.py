@@ -285,6 +285,37 @@ def _extract_data_date(raw_file: Path) -> str:
     return m.group(0)
 
 
+
+
+def _maybe_swap_lon_lat_by_area(ds: xr.Dataset, area: StudyArea) -> xr.Dataset:
+    """Swap lon/lat coordinates if detected as inverted relative to StudyArea."""
+    lon_min = float(ds["lon"].min())
+    lon_max = float(ds["lon"].max())
+    lat_min = float(ds["lat"].min())
+    lat_max = float(ds["lat"].max())
+
+    lon_target = (area.lon_min + area.lon_max) / 2.0
+    lat_target = (area.lat_min + area.lat_max) / 2.0
+    lon_center = (lon_min + lon_max) / 2.0
+    lat_center = (lat_min + lat_max) / 2.0
+
+    normal_error = abs(lon_center - lon_target) + abs(lat_center - lat_target)
+    swapped_error = abs(lat_center - lon_target) + abs(lon_center - lat_target)
+
+    if swapped_error + 1e-6 < normal_error:
+        print(
+            "[DEBUG] lon/lat appear swapped; correcting axes. "
+            f"before lon=({lon_min},{lon_max}) lat=({lat_min},{lat_max})"
+        )
+        ds = ds.rename({"lon": "__tmp_lon", "lat": "lon", "__tmp_lon": "lat"})
+        ds = ds.transpose(..., "lat", "lon")
+        print(
+            "[DEBUG] after swap "
+            f"lon=({float(ds['lon'].min())},{float(ds['lon'].max())}) "
+            f"lat=({float(ds['lat'].min())},{float(ds['lat'].max())})"
+        )
+
+    return ds
 def standardize_oscar_uv_netcdf(
     input_nc: Path,
     output_nc: Path,
@@ -339,6 +370,8 @@ def standardize_oscar_uv_netcdf(
     # CRS hints for GIS readers
     only_uv["lon"].attrs.update({"standard_name": "longitude", "units": "degrees_east", "axis": "X"})
     only_uv["lat"].attrs.update({"standard_name": "latitude", "units": "degrees_north", "axis": "Y"})
+
+    only_uv = _maybe_swap_lon_lat_by_area(only_uv, area)
 
     # 4) save
     output_nc.parent.mkdir(parents=True, exist_ok=True)
