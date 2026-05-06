@@ -220,7 +220,6 @@ def _north_up_array(da: xr.DataArray) -> np.ndarray:
     lat_values = np.asarray(da["lat"].values, dtype=float)
     values = da.transpose(lat_dim, lon_dim).values.astype("float32")
     return values[::-1, :] if lat_values[0] < lat_values[-1] else values
-    
 
 
 def _raster_transform(lon: np.ndarray, lat: np.ndarray):

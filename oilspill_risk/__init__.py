@@ -10,6 +10,7 @@ from .podaac import build_podaac_downloader_cmd, run_podaac_downloader, write_ea
 from .trajectory import (
     CoastalRiskResult,
     CurrentField,
+    current_field_from_geotiff,
     current_field_from_netcdf,
     HotspotSource,
     SimulationConfig,
@@ -33,6 +34,7 @@ __all__ = [
     "standardize_oscar_uv_netcdf",
     "export_oscar_uv_geotiff",
     "extract_data_date",
+    "current_field_from_geotiff",
     "current_field_from_netcdf",
     "estimate_coastal_risk",
     "infer_study_area_from_hotspots",
