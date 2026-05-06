@@ -147,7 +147,8 @@ for raw_nc in sorted(Path("files").glob("oscar_currents_final_*.nc")):
 ### NetCDF / GeoTIFF coordinate-placement notes
 
 - `standardize_oscar_uv_netcdf(...)` reconstructs index-like OSCAR coordinates from `geospatial_*` metadata before clipping.
-- Longitudes are normalized to `[-180, 180]`, and latitude/longitude axes are sorted before writing.
+- Longitudes are normalized to `[-180, 180]`, and NetCDF U/V variables are written in conventional non-spatial, `lat`, `lon` dimension order for QGIS.
+- Standardized NetCDF latitude is written north-to-south so the NetCDF grid opens north-up in GIS; GeoTIFF export still re-sorts internally as needed.
 - GeoTIFFs are written north-up using a transform derived from coordinate **centers** expanded by half a grid cell. This avoids the half-cell placement error caused by using center min/max values as raster bounds.
 - The GeoTIFF write flips rows vertically only when latitude is stored south-to-north; it does **not** flip columns, which would mirror the Red Sea/Djibouti subset east-west.
 
