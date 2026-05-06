@@ -26,7 +26,6 @@ class MeanRasterAggregator:
         self._sum: dict[str, np.ndarray] = {}
         self._count: dict[str, np.ndarray] = {}
         self._transform = None
-        self._filename: dict[str, str] = {}
 
     def add(self, group: RasterGroup, density: np.ndarray, transform: rasterio.Affine) -> None:
         """Accumulate one density raster into the requested group."""
@@ -36,7 +35,6 @@ class MeanRasterAggregator:
         if group.key not in self._sum:
             self._sum[group.key] = np.zeros_like(density, dtype=float)
             self._count[group.key] = np.zeros_like(density, dtype=float)
-            self._filename[group.key] = group.filename
 
         valid = ~np.isnan(density)
         self._sum[group.key][valid] += density[valid]
@@ -48,6 +46,11 @@ class MeanRasterAggregator:
         written: list[Path] = []
 
         for key in sorted(self._sum):
+            # mean_density = np.where(
+            #     self._count[key] > 0,
+            #     self._sum[key] / self._count[key],
+            #     np.nan,
+            # ).astype("float32")
             count = self._count[key]
             if not np.any(count > 0):
                 LOGGER.warning("Skipping empty group %s", key)
@@ -55,7 +58,7 @@ class MeanRasterAggregator:
             mean_density = np.full_like(self._sum[key], np.nan, dtype="float32")
             np.divide(self._sum[key], count, out=mean_density, where=count > 0)
 
-            out_path = output_dir / self._filename.get(key, f"mean_density_{key}.tif")
+            out_path = output_dir / f"mean_density_{key}.tif"
             with rasterio.open(
                 out_path,
                 "w",
