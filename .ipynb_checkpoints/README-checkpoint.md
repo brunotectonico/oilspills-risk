@@ -112,6 +112,7 @@ print(result.stdout)
 ## Standardize the already downloaded OSCAR NetCDF files
 
 The downloaded OSCAR final files should be standardized from the global grid, not clipped by the downloader first.  This keeps the original global coordinate metadata available for reconstructing true degree coordinates before the local clip and GeoTIFF export.
+To test coordinate rearrangement without clipping, pass `area=None` (or omit it). This writes the full global OSCAR U/V grids after longitude normalization and north-up raster orientation.
 
 ```python
 from pathlib import Path

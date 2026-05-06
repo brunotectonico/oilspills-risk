@@ -84,15 +84,31 @@ def _reconstruct_degree_coords(ds: xr.Dataset, lon_name: str, lat_name: str) -> 
 
 
 def ensure_lon_lat(ds: xr.Dataset) -> xr.Dataset:
-    """Return a dataset with ``lon``/``lat`` degree coordinates in GIS-friendly order."""
+    """Return a dataset with canonical ``lon``/``lat`` dimensions and coordinates.
+
+    OSCAR files may store spatial axes as dimensions named ``longitude`` and
+    ``latitude`` while the coordinate variables are named ``lon`` and ``lat``
+    (or vice versa).  Canonicalizing both the coordinate names and the backing
+    dimension names avoids downstream errors when arrays are transposed for
+    raster export.
+    """
     lon_name, lat_name = _infer_lon_lat_names(ds)
     ds = _reconstruct_degree_coords(ds, lon_name=lon_name, lat_name=lat_name)
 
+    lon_dim = ds[lon_name].dims[0]
+    lat_dim = ds[lat_name].dims[0]
     rename: dict[str, str] = {}
-    if lon_name != "lon":
-        rename[lon_name] = "lon"
-    if lat_name != "lat":
-        rename[lat_name] = "lat"
+    for source, target in (
+        (lon_dim, "lon"),
+        (lat_dim, "lat"),
+        (lon_name, "lon"),
+        (lat_name, "lat"),
+    ):
+        if source != target and source in ds:
+            rename[source] = target
+        elif source != target and source in ds.dims:
+            rename[source] = target
+
     if rename:
         ds = ds.rename(rename)
 
@@ -149,35 +165,41 @@ def _clean_fill_values(ds: xr.Dataset, variable_names: tuple[str, str]) -> xr.Da
             ds[name] = ds[name].where(ds[name] != fill_value)
     return ds
 
-
 def standardize_oscar_uv_netcdf(
     input_nc: Path,
     output_nc: Path,
-    area: StudyArea,
+    area: StudyArea | None = None,
     *,
     u_var: str = "u",
     v_var: str = "v",
 ) -> Path:
-    """Normalize an OSCAR NetCDF to lon/lat degrees, clip it, and keep U/V variables."""
+    """Normalize OSCAR lon/lat coordinates and optionally clip to a study area.
+
+    Pass ``area=None`` to keep the full OSCAR domain.  This is useful for
+    checking whether coordinate rearrangement fixes the global placement before
+    testing a local Red Sea/Djibouti clip.
+    """
     with xr.open_dataset(input_nc) as ds:
         ds = ensure_lon_lat(ds)
         actual_u, actual_v = _pick_uv_names(ds, u_var=u_var, v_var=v_var)
-        subset = subset_lon_lat(ds[[actual_u, actual_v]], area)
-        subset = _clean_fill_values(subset, (actual_u, actual_v))
+        output = ds[[actual_u, actual_v]]
+        if area is not None:
+            output = subset_lon_lat(output, area)
+        output = _clean_fill_values(output, (actual_u, actual_v))
 
-        subset["lon"].attrs.update({"standard_name": "longitude", "units": "degrees_east", "axis": "X"})
-        subset["lat"].attrs.update({"standard_name": "latitude", "units": "degrees_north", "axis": "Y"})
-        subset.attrs.update(
-            geospatial_lon_min=float(subset["lon"].min()),
-            geospatial_lon_max=float(subset["lon"].max()),
-            geospatial_lat_min=float(subset["lat"].min()),
-            geospatial_lat_max=float(subset["lat"].max()),
+        output["lon"].attrs.update({"standard_name": "longitude", "units": "degrees_east", "axis": "X"})
+        output["lat"].attrs.update({"standard_name": "latitude", "units": "degrees_north", "axis": "Y"})
+        output.attrs.update(
+            geospatial_lon_min=float(output["lon"].min()),
+            geospatial_lon_max=float(output["lon"].max()),
+            geospatial_lat_min=float(output["lat"].min()),
+            geospatial_lat_max=float(output["lat"].max()),
         )
 
         output_nc.parent.mkdir(parents=True, exist_ok=True)
-        subset.to_netcdf(output_nc)
+        output.to_netcdf(output_nc)
     return output_nc
-
+    
 
 def _cell_size(values: np.ndarray) -> float:
     if values.size < 2:
@@ -186,9 +208,19 @@ def _cell_size(values: np.ndarray) -> float:
 
 
 def _north_up_array(da: xr.DataArray) -> np.ndarray:
+    """Return a 2-D array ordered north-to-south and west-to-east."""
+    lat_dim = "lat" if "lat" in da.dims else da["lat"].dims[0]
+    lon_dim = "lon" if "lon" in da.dims else da["lon"].dims[0]
+    extra_dims = [dim for dim in da.dims if dim not in {lat_dim, lon_dim}]
+    for dim in extra_dims:
+        if da.sizes[dim] != 1:
+            raise ValueError(f"Cannot export non-spatial dimension {dim!r} with size {da.sizes[dim]}")
+        da = da.isel({dim: 0}, drop=True)
+
     lat_values = np.asarray(da["lat"].values, dtype=float)
-    values = da.transpose("lat", "lon").values.astype("float32")
+    values = da.transpose(lat_dim, lon_dim).values.astype("float32")
     return values[::-1, :] if lat_values[0] < lat_values[-1] else values
+    
 
 
 def _raster_transform(lon: np.ndarray, lat: np.ndarray):
@@ -203,24 +235,29 @@ def _raster_transform(lon: np.ndarray, lat: np.ndarray):
 def export_oscar_uv_geotiff(
     input_nc: Path,
     output_dir: Path,
-    area: StudyArea,
+    area: StudyArea | None = None,
     *,
     u_var: str = "u",
     v_var: str = "v",
 ) -> tuple[Path, Path]:
-    """Export clipped OSCAR U/V currents as north-up EPSG:4326 GeoTIFF rasters."""
+    """Export OSCAR U/V currents as north-up EPSG:4326 GeoTIFF rasters.
+
+    Pass ``area=None`` to export the full standardized domain.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with xr.open_dataset(input_nc) as ds:
         ds = ensure_lon_lat(ds)
         actual_u, actual_v = _pick_uv_names(ds, u_var=u_var, v_var=v_var)
-        subset = subset_lon_lat(ds[[actual_u, actual_v]], area)
-        subset = _clean_fill_values(subset, (actual_u, actual_v))
+        output = ds[[actual_u, actual_v]]
+        if area is not None:
+            output = subset_lon_lat(output, area)
+        output = _clean_fill_values(output, (actual_u, actual_v))
 
-        u = subset[actual_u].isel(time=0) if "time" in subset[actual_u].dims else subset[actual_u]
-        v = subset[actual_v].isel(time=0) if "time" in subset[actual_v].dims else subset[actual_v]
-        lon = np.asarray(subset["lon"].values, dtype=float)
-        lat = np.asarray(subset["lat"].values, dtype=float)
+        u = output[actual_u].isel(time=0) if "time" in output[actual_u].dims else output[actual_u]
+        v = output[actual_v].isel(time=0) if "time" in output[actual_v].dims else output[actual_v]
+        lon = np.asarray(output["lon"].values, dtype=float)
+        lat = np.asarray(output["lat"].values, dtype=float)
         transform = _raster_transform(lon, lat)
         height, width = lat.size, lon.size
 
