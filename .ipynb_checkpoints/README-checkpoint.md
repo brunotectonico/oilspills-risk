@@ -67,12 +67,7 @@ This repository provides a modular coastal oil-spill risk screening workflow for
 ```python
 from oilspill_risk.models import StudyArea
 
-area = StudyArea(
-    lon_min=41.50803970311112,
-    lon_max=45.69349690701655,
-    lat_min=9.72568026223306,
-    lat_max=14.679851304878618,
-)
+area = StudyArea(lon_min=41.5, lon_max=45.75, lat_min=9.75, lat_max=14.75)
 ```
 
 ## Run hotspot extraction
@@ -124,8 +119,8 @@ from oilspill_risk.models import StudyArea
 area = StudyArea(lon_min=41.5, lon_max=45.75, lat_min=9.75, lat_max=14.75)
 for raw_nc in sorted(Path("files").glob("oscar_currents_final_*.nc")):
     date_id = raw_nc.stem.rsplit("_", 1)[-1]
-    clipped_nc = raw_nc.with_name(f"oscar_uv_clip_{date_id}.nc")
-    standardize_oscar_uv_netcdf(raw_nc, clipped_nc, area)
+    clipped_nc = raw_nc.with_name(f"oscar_uv_std_{date_id}.nc")
+    standardize_oscar_uv_netcdf(raw_nc, clipped_nc, area) # area = None if no clipping to be done
     export_oscar_uv_geotiff(clipped_nc, raw_nc.parent, area)
 ```
 

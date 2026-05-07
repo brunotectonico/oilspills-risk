@@ -92,18 +92,30 @@ def plot_current_orientation_intensity(
             input_units=input_units,
             **netcdf_kwargs,
         )
+    if add_coastlines:
+        import cartopy.crs as ccrs
+        data_transform = ccrs.PlateCarree()
+        projection = ccrs.PlateCarree()
+    else:
+        projection = None
+        data_transform = None
+        
     if ax is None:
-        _, ax = plt.subplots(figsize=(10, 8))
-
+        _, ax = plt.subplots(figsize=(10, 8), subplot_kw={'projection': projection})
+     
     speed = current_intensity(currents)
-    mesh = ax.pcolormesh(currents.lon, currents.lat, speed, shading="auto", cmap=cmap)
+    mesh = ax.pcolormesh(currents.lon, currents.lat, speed, 
+                         shading="auto", cmap=cmap, 
+                         transform=data_transform)
 
     stride = max(1, int(stride))
     lon_q = currents.lon[::stride]
     lat_q = currents.lat[::stride]
     u_q = currents.u[::stride, ::stride]
     v_q = currents.v[::stride, ::stride]
-    quiver = ax.quiver(lon_q, lat_q, u_q, v_q, color=quiver_color, scale=quiver_scale)
+    quiver = ax.quiver(lon_q, lat_q, u_q, v_q, 
+                       color=quiver_color, scale=quiver_scale, 
+                       transform=data_transform)
 
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
@@ -114,7 +126,7 @@ def plot_current_orientation_intensity(
         cbar.set_label("Current intensity (degrees/hour after conversion)")
     if add_coastlines:
         add_cartopy_coastlines(ax=ax, resolution=coastline_resolution)
-
+        
     return ax, mesh, quiver
 
 
@@ -125,9 +137,8 @@ def _hotspots_to_arrays(
     lat_col: str,
     density_col: str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str | None]]:
-    if isinstance(hotspots, Path):
+    if isinstance(hotspots, (Path, str)):
         import pandas as pd
-
         hotspots = pd.read_csv(hotspots)
 
     if hasattr(hotspots, "__getitem__") and all(col in hotspots for col in (lon_col, lat_col, density_col)):
