@@ -163,7 +163,7 @@ ax, mesh, quiver = plot_current_orientation_intensity(
     v_tif=Path("files/oscar_uv_clip_20200101_v.tif"),
     stride=3,
 )
-plot_hotspots(Path("gmtds_tanker_hotspots_multi.csv"), ax=ax, density_col="density_weight")
+plot_hotspots(Path("gmtds_tanker_hotspots_multi.csv"), ax=ax, density_col="mean_density")
 ```
 
 Cartopy coastlines can be added with `add_cartopy_coastlines(ax)`. Cartopy is optional and only required when that coastline helper is called.
