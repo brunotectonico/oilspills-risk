@@ -75,7 +75,7 @@ def run_podaac_downloader(
 
     env = os.environ.copy()
     if username and password:
-        resolved_netrc = netrc_path or (Path.home() / ("_netrc" if os.name == "nt" else ".netrc"))
+        resolved_netrc = netrc_path or (Path.home() / (".netrc" if os.name == "nt" else "_netrc")) #Some windows versions use _netrc
         write_earthdata_netrc(resolved_netrc, username, password)
         env["NETRC"] = str(resolved_netrc)
 
