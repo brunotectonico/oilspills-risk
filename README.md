@@ -81,6 +81,15 @@ python density_hotspots.py /path/to/gmtds_data \
   --season-length-months 3
 ```
 
+### Expected GMTDS input filename patterns
+
+The hotspot CLI expects one ZIP archive per analyzed year and one or more monthly GeoTIFFs inside each ZIP. Year and month are parsed from filenames before the raster is read:
+
+- ZIP archive names must contain an underscore followed by a 4-digit year, for example `GMTDS_Tankers_2020.zip` or `GMTDS_2020_Tankers.zip`.
+- GeoTIFF member names inside each ZIP must contain an underscore, a 2-digit month, and another underscore, for example `GMTDS_Tankers_01_density.tif` for January.
+- The default CLI pattern is `*Tankers.zip`; use `--pattern` if your archive names differ while still following the year parsing rule.
+- Files that do not match these patterns raise a parsing error. During batch ZIP processing, errors are logged with the offending TIFF/ZIP name and processing continues with the next monthly raster.
+
 ## Secure Earthdata auth with PO.DAAC downloader
 
 For the `podaac-data-downloader` mode (from `podaac/data-subscriber`), avoid hardcoding credentials in scripts.

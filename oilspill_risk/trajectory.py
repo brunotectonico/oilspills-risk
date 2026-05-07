@@ -10,6 +10,8 @@ import rasterio
 from rasterio.transform import xy
 import xarray as xr
 
+from .gridding import ensure_lon_lat, _pick_uv_names
+
 
 @dataclass(frozen=True)
 class HotspotSource:
@@ -126,35 +128,41 @@ def current_field_from_netcdf(
 ) -> CurrentField:
     """Build a CurrentField from u/v variables in NetCDF.
 
-    The function accepts u/v on (time, lat, lon) or (lat, lon).
-    If units are m/s, conversion to deg/hour is approximated with local latitude.
+    The function accepts u/v on (time, lat, lon) or (lat, lon). It first
+    applies the same OSCAR coordinate-name inference, degree-coordinate
+    reconstruction, longitude normalization, and lon/lat sorting used by the
+    gridding workflow. If units are m/s, conversion to deg/hour is approximated
+    with local latitude.
     """
-    ds = xr.open_dataset(nc_path)
-    u_da = ds[u_var]
-    v_da = ds[v_var]
+    with xr.open_dataset(nc_path) as ds:
+        ds = ensure_lon_lat(ds)
+        actual_u, actual_v = _pick_uv_names(ds, u_var=u_var, v_var=v_var)
+        u_da = ds[actual_u]
+        v_da = ds[actual_v]
 
-    if time_name in u_da.dims:
-        if time_index is not None:
-            u_slice = u_da.isel({time_name: time_index})
-            v_slice = v_da.isel({time_name: time_index})
-        elif average_over_time:
-            u_slice = u_da.mean(dim=time_name)
-            v_slice = v_da.mean(dim=time_name)
+        if time_name in u_da.dims:
+            if time_index is not None:
+                u_slice = u_da.isel({time_name: time_index})
+                v_slice = v_da.isel({time_name: time_index})
+            elif average_over_time:
+                u_slice = u_da.mean(dim=time_name)
+                v_slice = v_da.mean(dim=time_name)
+            else:
+                u_slice = u_da.isel({time_name: 0})
+                v_slice = v_da.isel({time_name: 0})
         else:
-            u_slice = u_da.isel({time_name: 0})
-            v_slice = v_da.isel({time_name: 0})
-    else:
-        u_slice = u_da
-        v_slice = v_da
+            u_slice = u_da
+            v_slice = v_da
 
-    lon = u_slice[lon_name].values.astype(float)
-    lat = u_slice[lat_name].values.astype(float)
-    u = u_slice.values.astype(float)
-    v = v_slice.values.astype(float)
+        resolved_lon_name = lon_name if lon_name in u_slice.coords else "lon"
+        resolved_lat_name = lat_name if lat_name in u_slice.coords else "lat"
+        lon = u_slice[resolved_lon_name].values.astype(float)
+        lat = u_slice[resolved_lat_name].values.astype(float)
+        u = u_slice.values.astype(float)
+        v = v_slice.values.astype(float)
 
     u, v = _convert_current_units(lon=lon, lat=lat, u=u, v=v, input_units=input_units)
 
-    ds.close()
     return CurrentField(lon=lon, lat=lat, u=u, v=v)
 
 
