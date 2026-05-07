@@ -45,6 +45,8 @@ This repository provides a modular coastal oil-spill risk screening workflow for
   Separate mean-density raster aggregation module.
 - `oilspill_risk/trajectory.py`
   Reusable trajectory simulation and coastal risk scoring primitives.
+- `oilspill_risk/mapping.py`
+  Cartography helpers for currents, coastlines, and traffic-density hotspots.
 - `oilspill_risk/models.py`
   OSCAR `StudyArea`, `OscarDownloadConfig`, and study-area helpers.
 - `oilspill_risk/periods.py`
@@ -63,7 +65,7 @@ This repository provides a modular coastal oil-spill risk screening workflow for
 ## Study area used for OSCAR Red Sea / Djibouti tests
 
 ```python
-from oilspill_risk.oscar import StudyArea
+from oilspill_risk.models import StudyArea
 
 area = StudyArea(
     lon_min=41.50803970311112,
@@ -79,7 +81,7 @@ area = StudyArea(
 python density_hotspots.py /path/to/gmtds_data \
   --pattern "*Tankers.zip" \
   --mean-raster-dir mean_density_rasters \
-  --mean-raster-frequency seasonal \
+  --mean-raster-frequency seasonal \ # or monthly
   --season-start-month 1 \
   --season-length-months 3
 ```
@@ -116,7 +118,8 @@ To test coordinate rearrangement without clipping, pass `area=None` (or omit it)
 
 ```python
 from pathlib import Path
-from oilspill_risk.oscar import StudyArea, export_oscar_uv_geotiff, standardize_oscar_uv_netcdf
+from oilspill_risk.gridding import export_oscar_uv_geotiff, standardize_oscar_uv_netcdf
+from oilspill_risk.models import StudyArea
 
 area = StudyArea(lon_min=41.5, lon_max=45.75, lat_min=9.75, lat_max=14.75)
 for raw_nc in sorted(Path("files").glob("oscar_currents_final_*.nc")):
@@ -129,13 +132,50 @@ for raw_nc in sorted(Path("files").glob("oscar_currents_final_*.nc")):
 ### NetCDF / GeoTIFF coordinate-placement notes
 
 - `standardize_oscar_uv_netcdf(...)` reconstructs index-like OSCAR coordinates from `geospatial_*` metadata before clipping.
-- Longitudes are normalized to `[-180, 180]`, and latitude/longitude axes are sorted before writing.
+- Longitudes are normalized to `[-180, 180]`, and NetCDF U/V variables are written in conventional non-spatial, `lat`, `lon` dimension order for QGIS.
+- Standardized NetCDF latitude is written north-to-south so the NetCDF grid opens north-up in GIS; GeoTIFF export still re-sorts internally as needed.
 - GeoTIFFs are written north-up using a transform derived from coordinate **centers** expanded by half a grid cell. This avoids the half-cell placement error caused by using center min/max values as raster bounds.
 - The GeoTIFF write flips rows vertically only when latitude is stored south-to-north; it does **not** flip columns, which would mirror the Red Sea/Djibouti subset east-west.
 
-## Still to complete
+### Which current format should trajectories use?
 
-- Robust OSCAR provider defaults (dataset IDs/URLs can vary by server).
-- Coastline preparation utilities (extract target coast points from shapefiles).
-- Domain aggregation/mapping for gridded coastline risk products.
-- Calibration of incident-rate scaling for absolute probability interpretation.
+For the current `trajectory.py` workflow, either NetCDF or GeoTIFF can be loaded into the same `CurrentField` structure. Use NetCDF when you want to preserve time slices or average across time; use paired U/V GeoTIFFs when you want the currents to follow the same QGIS/GDAL raster conventions as marine-traffic density rasters.
+
+```python
+from pathlib import Path
+from oilspill_risk.trajectory import current_field_from_geotiff, current_field_from_netcdf
+
+# QGIS/GDAL-style raster workflow, aligned with traffic-density rasters
+currents_from_raster = current_field_from_geotiff(
+    Path("files/oscar_uv_clip_20200101_u.tif"),
+    Path("files/oscar_uv_clip_20200101_v.tif"),
+)
+
+# NetCDF workflow, useful when retaining the time dimension
+currents_from_netcdf = current_field_from_netcdf(Path("files/oscar_uv_clip_20200101.nc"))
+```
+
+## Mapping currents and traffic-density hotspots
+
+`oilspill_risk/mapping.py` hosts reusable cartography helpers. It can read U/V currents from paired GeoTIFFs or NetCDF through the same loaders used by `trajectory.py`, plot current intensity as a color field, draw current orientation vectors, and overlay hotspots with symbol size scaled by density.
+
+```python
+from pathlib import Path
+from oilspill_risk.mapping import plot_current_orientation_intensity, plot_hotspots
+
+ax, mesh, quiver = plot_current_orientation_intensity(
+    u_tif=Path("files/oscar_uv_clip_20200101_u.tif"),
+    v_tif=Path("files/oscar_uv_clip_20200101_v.tif"),
+    stride=3,
+)
+plot_hotspots(Path("gmtds_tanker_hotspots_multi.csv"), ax=ax, density_col="density_weight")
+```
+
+Cartopy coastlines can be added with `add_cartopy_coastlines(ax)`. Cartopy is optional and only required when that coastline helper is called.
+
+### Trajectory expansion and period aggregation approach
+
+Probabilistic workflow works in three stages:
+1. aggregates OSCAR currents by the target period (`monthly`, `seasonal`, or another period id);
+2. for each hotspot/event, uses the hotspot density as the source weight and simulate particle expansion with the period current field;
+3. combines all individual event outputs by averaging or summing weighted particle/coastal-hit probabilities per period, then average periods only after keeping their period ids explicit.

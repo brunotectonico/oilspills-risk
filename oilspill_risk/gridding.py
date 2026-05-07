@@ -14,7 +14,7 @@ from .models import StudyArea, validate_study_area
 DEFAULT_U_NAMES = ("u", "u_current", "ugos", "u_curr")
 DEFAULT_V_NAMES = ("v", "v_current", "vgos", "v_curr")
 
-
+   
 def _infer_lon_lat_names(ds: xr.Dataset, lon_name: str = "lon", lat_name: str = "lat") -> tuple[str, str]:
     """Resolve longitude/latitude names from common metadata and variable names."""
 
@@ -165,6 +165,31 @@ def _clean_fill_values(ds: xr.Dataset, variable_names: tuple[str, str]) -> xr.Da
             ds[name] = ds[name].where(ds[name] != fill_value)
     return ds
 
+
+def _as_qgis_netcdf_grid(ds: xr.Dataset) -> xr.Dataset:
+    """Order NetCDF variables as non-spatial dims, then lat/lon, north-to-south.
+
+    QGIS is more reliable with NetCDF rasters when spatial dimensions are in
+    the conventional Y/X order.  Keeping latitude descending makes the NetCDF
+    array north-up, matching the GeoTIFF export without changing the GeoTIFF
+    workflow itself.
+    """
+    ds = ds.sortby("lon")
+    ds = ds.sortby("lat", ascending=False)
+
+    ordered_vars: dict[str, xr.DataArray] = {}
+    for name, da in ds.data_vars.items():
+        if "lat" in da.dims and "lon" in da.dims:
+            leading_dims = [dim for dim in da.dims if dim not in {"lat", "lon"}]
+            ordered_vars[name] = da.transpose(*leading_dims, "lat", "lon")
+        else:
+            ordered_vars[name] = da
+
+    if not ordered_vars:
+        return ds
+    return ds.assign(ordered_vars)
+
+    
 def standardize_oscar_uv_netcdf(
     input_nc: Path,
     output_nc: Path,
@@ -186,7 +211,8 @@ def standardize_oscar_uv_netcdf(
         if area is not None:
             output = subset_lon_lat(output, area)
         output = _clean_fill_values(output, (actual_u, actual_v))
-
+        
+        output = _as_qgis_netcdf_grid(output)
         output["lon"].attrs.update({"standard_name": "longitude", "units": "degrees_east", "axis": "X"})
         output["lat"].attrs.update({"standard_name": "latitude", "units": "degrees_north", "axis": "Y"})
         output.attrs.update(

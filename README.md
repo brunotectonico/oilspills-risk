@@ -65,7 +65,7 @@ This repository provides a modular coastal oil-spill risk screening workflow for
 ## Study area used for OSCAR Red Sea / Djibouti tests
 
 ```python
-from oilspill_risk.oscar import StudyArea
+from oilspill_risk.models import StudyArea
 
 area = StudyArea(
     lon_min=41.50803970311112,
@@ -81,7 +81,7 @@ area = StudyArea(
 python density_hotspots.py /path/to/gmtds_data \
   --pattern "*Tankers.zip" \
   --mean-raster-dir mean_density_rasters \
-  --mean-raster-frequency seasonal \
+  --mean-raster-frequency seasonal \ # or monthly
   --season-start-month 1 \
   --season-length-months 3
 ```
@@ -118,7 +118,8 @@ To test coordinate rearrangement without clipping, pass `area=None` (or omit it)
 
 ```python
 from pathlib import Path
-from oilspill_risk.oscar import StudyArea, export_oscar_uv_geotiff, standardize_oscar_uv_netcdf
+from oilspill_risk.gridding import export_oscar_uv_geotiff, standardize_oscar_uv_netcdf
+from oilspill_risk.models import StudyArea
 
 area = StudyArea(lon_min=41.5, lon_max=45.75, lat_min=9.75, lat_max=14.75)
 for raw_nc in sorted(Path("files").glob("oscar_currents_final_*.nc")):
@@ -142,7 +143,6 @@ For the current `trajectory.py` workflow, either NetCDF or GeoTIFF can be loaded
 
 ```python
 from pathlib import Path
-
 from oilspill_risk.trajectory import current_field_from_geotiff, current_field_from_netcdf
 
 # QGIS/GDAL-style raster workflow, aligned with traffic-density rasters
@@ -161,7 +161,6 @@ currents_from_netcdf = current_field_from_netcdf(Path("files/oscar_uv_clip_20200
 
 ```python
 from pathlib import Path
-
 from oilspill_risk.mapping import plot_current_orientation_intensity, plot_hotspots
 
 ax, mesh, quiver = plot_current_orientation_intensity(
