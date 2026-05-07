@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import rasterio
@@ -21,6 +23,58 @@ class HotspotSource:
     lat: float
     density_weight: float
     hotspot_id: str
+
+
+def hotspot_sources_from_records(
+    hotspots: Path | Iterable[dict[str, Any]] | Any,
+    *,
+    lon_col: str = "lon",
+    lat_col: str = "lat",
+    density_col: str = "mean_density",
+    hotspot_id_col: str = "hotspot_id",
+    mean_density_min: float | None = None,
+) -> list[HotspotSource]:
+    """Create spill-source candidates from hotspot records.
+
+    ``hotspots`` may be a CSV path, a pandas-like table, or an iterable of
+    mapping records. When ``mean_density_min`` is provided, only records whose
+    selected density column is greater than or equal to the threshold become
+    potential spill sources.
+    """
+    if isinstance(hotspots, (Path, str)):
+        import pandas as pd
+
+        hotspots = pd.read_csv(hotspots)
+
+    records: list[dict[str, Any]]
+    if hasattr(hotspots, "to_dict"):
+        records = list(hotspots.to_dict("records"))
+    else:
+        records = list(hotspots)
+
+    sources: list[HotspotSource] = []
+    for index, record in enumerate(records):
+        density = float(record[density_col])
+        if mean_density_min is not None and density < mean_density_min:
+            continue
+
+        hotspot_id = record.get(hotspot_id_col) if hasattr(record, "get") else None
+        if hotspot_id is None or hotspot_id == "":
+            year = record.get("year") if hasattr(record, "get") else None
+            month = record.get("month") if hasattr(record, "get") else None
+            cluster_id = record.get("cluster_id") if hasattr(record, "get") else index
+            hotspot_id = f"{year or 'unknown'}-{month or 'unknown'}-{cluster_id}"
+
+        sources.append(
+            HotspotSource(
+                lon=float(record[lon_col]),
+                lat=float(record[lat_col]),
+                density_weight=density,
+                hotspot_id=str(hotspot_id),
+            )
+        )
+
+    return sources
 
 
 @dataclass(frozen=True)
@@ -156,6 +210,17 @@ def current_field_from_netcdf(
 
         resolved_lon_name = lon_name if lon_name in u_slice.coords else "lon"
         resolved_lat_name = lat_name if lat_name in u_slice.coords else "lat"
+
+        for dim in [dim for dim in u_slice.dims if dim not in {resolved_lat_name, resolved_lon_name}]:
+            if u_slice.sizes[dim] != 1:
+                raise ValueError(
+                    f"Cannot load non-spatial dimension {dim!r} with size {u_slice.sizes[dim]}"
+                )
+            u_slice = u_slice.isel({dim: 0}, drop=True)
+            v_slice = v_slice.isel({dim: 0}, drop=True)
+
+        u_slice = u_slice.transpose(resolved_lat_name, resolved_lon_name)
+        v_slice = v_slice.transpose(resolved_lat_name, resolved_lon_name)
         lon = u_slice[resolved_lon_name].values.astype(float)
         lat = u_slice[resolved_lat_name].values.astype(float)
         u = u_slice.values.astype(float)
@@ -224,3 +289,16 @@ def estimate_coastal_risk(
         survival_fraction=survival_fraction,
         probability_score=probability_score,
     )
+
+
+def estimate_coastal_risk_for_sources(
+    sources: Iterable[HotspotSource],
+    currents: CurrentField,
+    coast_points: np.ndarray,
+    cfg: SimulationConfig,
+) -> list[CoastalRiskResult]:
+    """Estimate coastal risk for multiple potential spill sources."""
+    return [
+        estimate_coastal_risk(source=source, currents=currents, coast_points=coast_points, cfg=cfg)
+        for source in sources
+    ]

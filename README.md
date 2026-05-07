@@ -175,11 +175,56 @@ ax, mesh, quiver = plot_current_orientation_intensity(
 plot_hotspots(Path("gmtds_tanker_hotspots_multi.csv"), ax=ax, density_col="mean_density")
 ```
 
+To plot directly from a standardized NetCDF current file instead of paired GeoTIFFs, pass `nc_path` and any NetCDF loader options through the same helper:
+
+```python
+ax, mesh, quiver = plot_current_orientation_intensity(
+    nc_path=Path("files/oscar_uv_clip_20200101.nc"),
+    time_index=0,  # omit to average over time by default
+    stride=3,
+)
+plot_hotspots(Path("gmtds_tanker_hotspots_multi.csv"), ax=ax, density_col="mean_density")
+```
+
 Cartopy coastlines can be added with `add_cartopy_coastlines(ax)`. Cartopy is optional and only required when that coastline helper is called.
 
-### Trajectory expansion and period aggregation approach
+## Trajectory and spill-risk analysis logic
 
-Probabilistic workflow works in three stages:
-1. aggregates OSCAR currents by the target period (`monthly`, `seasonal`, or another period id);
-2. for each hotspot/event, uses the hotspot density as the source weight and simulate particle expansion with the period current field;
-3. combines all individual event outputs by averaging or summing weighted particle/coastal-hit probabilities per period, then average periods only after keeping their period ids explicit.
+`HotspotSource` is the bridge between the traffic-density workflow and the spill-trajectory workflow: it stores a candidate spill origin (`lon`, `lat`), its traffic-derived `density_weight`, and a stable `hotspot_id`. Use `hotspot_sources_from_records(...)` to convert a hotspot CSV or table into these source objects. The optional `mean_density_min` filter keeps only hotspots whose selected density column is high enough to be treated as potential spill sources.
+
+```python
+import numpy as np
+from pathlib import Path
+from oilspill_risk.trajectory import (
+    SimulationConfig,
+    current_field_from_netcdf,
+    estimate_coastal_risk_for_sources,
+    hotspot_sources_from_records,
+)
+
+sources = hotspot_sources_from_records(
+    Path("gmtds_tanker_hotspots_multi.csv"),
+    density_col="mean_density",
+    mean_density_min=100.0,  # choose after inspecting the density distribution
+)
+currents = current_field_from_netcdf(Path("files/oscar_uv_clip_20200101.nc"))
+coast_points = np.array([
+    [43.0, 11.5],
+    [43.1, 11.6],
+])
+risk_rows = estimate_coastal_risk_for_sources(
+    sources=sources,
+    currents=currents,
+    coast_points=coast_points,
+    cfg=SimulationConfig(),
+)
+```
+
+The current probabilistic workflow works in these stages:
+
+1. extract GMTDS hotspot candidates and keep the `period_id`, `mean_density`, and hotspot coordinates explicit;
+2. filter hotspot candidates into `HotspotSource` objects with a documented density threshold such as `mean_density_min`;
+3. aggregate or select OSCAR currents for the matching period, loading them from NetCDF or paired GeoTIFFs into `CurrentField`;
+4. simulate particles from each source with advection, random-walk diffusion, and simplified weathering;
+5. score each source as `density_weight × coastal_hit_fraction × survival_fraction`;
+6. combine event-level scores by period, and only average across periods after keeping period IDs explicit.

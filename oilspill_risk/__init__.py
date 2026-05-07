@@ -15,6 +15,8 @@ from .trajectory import (
     HotspotSource,
     SimulationConfig,
     estimate_coastal_risk,
+    estimate_coastal_risk_for_sources,
+    hotspot_sources_from_records,
     simulate_particles,
 )
 
@@ -37,6 +39,8 @@ __all__ = [
     "current_field_from_geotiff",
     "current_field_from_netcdf",
     "estimate_coastal_risk",
+    "estimate_coastal_risk_for_sources",
+    "hotspot_sources_from_records",
     "infer_study_area_from_hotspots",
     "raw_oscar_files",
     "run_podaac_downloader",
