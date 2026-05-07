@@ -43,7 +43,7 @@ __all__ = [
     "run_hotspot_extraction",
     "seasonal_periods",
     "simulate_particles",
-    "validate_study_area"
+    "validate_study_area",
     "write_earthdata_netrc",
 ]
 
