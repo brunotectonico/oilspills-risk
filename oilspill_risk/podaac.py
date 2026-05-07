@@ -1,22 +1,22 @@
-"""Functions to write cmd to call for PO.DAAC routine and download OSCAR files"""
+"""PO.DAAC downloader command construction and Earthdata authentication helpers."""
 
 from __future__ import annotations
 
 import os
 import stat
 import subprocess
-import warnings
-
 from pathlib import Path
+
+from .models import StudyArea
 
 
 def write_earthdata_netrc(netrc_path: Path, username: str, password: str) -> Path:
     """Write Earthdata credentials to a netrc file with restricted permissions."""
     netrc_path.parent.mkdir(parents=True, exist_ok=True)
     netrc_path.write_text(
-        "machine urs.earthdata.nasa.gov"
-        f"  login {username}"
-        f"  password {password}",
+        "machine urs.earthdata.nasa.gov\n"
+        f"  login {username}\n"
+        f"  password {password}\n",
         encoding="utf-8",
     )
     netrc_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
@@ -27,24 +27,18 @@ def build_podaac_downloader_cmd(
     collection: str,
     output_dir: Path,
     *,
-    start_date: str | None = None,#Assumes date already in string format (based in init.py)
+    start_date: str | None = None,
     end_date: str | None = None,
     bbox: StudyArea | None = None,
     provider: str | None = None,
     limit: int | None = None,
     dry_run: bool = False,
 ) -> list[str]:
-    """Build a podaac-data-downloader command list."""
-    cmd = [
-        "podaac-data-downloader",
-        "-c",
-        collection,
-        "-d",
-        str(output_dir),
-    ]
+    """Build a ``podaac-data-downloader`` command list."""
+    cmd = ["podaac-data-downloader", "-c", collection, "-d", str(output_dir)]
 
     if start_date is not None:
-        cmd += ["-sd", start_date] 
+        cmd += ["-sd", start_date]
     if end_date is not None:
         cmd += ["-ed", end_date]
     if bbox is not None:
@@ -73,20 +67,16 @@ def run_podaac_downloader(
     limit: int | None = None,
     dry_run: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    """Run the PO.DAAC downloader with Earthdata auth from netrc or env vars.
-
-    Credentials can be passed directly, or via env vars
-    EARTHDATA_USERNAME / EARTHDATA_PASSWORD.
-    """
+    """Run the PO.DAAC downloader with Earthdata auth from netrc or env vars."""
     username = earthdata_username or os.getenv("EARTHDATA_USERNAME")
     password = earthdata_password or os.getenv("EARTHDATA_PASSWORD")
 
     env = os.environ.copy()
     if username and password:
-        resolved_netrc = netrc_path or (Path.home() / (".netrc" if os.name == "nt" else ".netrc")) #Some windows versions uses _netrc
+        resolved_netrc = netrc_path or Path.home() / ("_netrc" if os.name == "nt" else ".netrc")
         write_earthdata_netrc(resolved_netrc, username, password)
         env["NETRC"] = str(resolved_netrc)
-        
+
     cmd = build_podaac_downloader_cmd(
         collection=collection,
         output_dir=output_dir,
@@ -97,10 +87,4 @@ def run_podaac_downloader(
         limit=limit,
         dry_run=dry_run,
     )
-
-    try: # to handle errors in download
-        return subprocess.run(cmd, check=True, text=True, capture_output=True, env=env)
-    except subprocess.CalledProcessError as e:
-        print(f"Error: {e.stdout}")
-        print(f"Details: {e.stderr}") 
-        raise
+    return subprocess.run(cmd, check=True, text=True, capture_output=True, env=env)

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import rasterio
+from rasterio.transform import xy
 import xarray as xr
 
 
@@ -58,6 +60,58 @@ class CurrentField:
         return self.u[yi, xi], self.v[yi, xi]
 
 
+def _convert_current_units(
+    lon: np.ndarray,
+    lat: np.ndarray,
+    u: np.ndarray,
+    v: np.ndarray,
+    input_units: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert U/V current components to degrees per hour for trajectory steps."""
+    if input_units != "m/s":
+        return u, v
+
+    m_per_deg_lat = 111_320.0
+    lat_rad = np.deg2rad(lat)
+    m_per_deg_lon = np.maximum(1e-6, m_per_deg_lat * np.cos(lat_rad))
+
+    v = v * 3600.0 / m_per_deg_lat
+    u = u * 3600.0 / m_per_deg_lon[:, None]
+    return u, v
+
+
+def current_field_from_geotiff(
+    u_tif: Path,
+    v_tif: Path,
+    *,
+    input_units: str = "m/s",
+) -> CurrentField:
+    """Build a CurrentField from paired U/V GeoTIFF rasters.
+
+    This is useful when the OSCAR rasters have already been validated in QGIS
+    or need to align with QGIS-style marine-traffic density raster products.
+    The U and V rasters must share shape, transform, and CRS.
+    """
+    with rasterio.open(u_tif) as u_src, rasterio.open(v_tif) as v_src:
+        if u_src.shape != v_src.shape:
+            raise ValueError(f"U/V raster shapes differ: {u_src.shape} != {v_src.shape}")
+        if u_src.transform != v_src.transform:
+            raise ValueError("U/V raster transforms differ")
+        if u_src.crs != v_src.crs:
+            raise ValueError(f"U/V raster CRS differ: {u_src.crs} != {v_src.crs}")
+
+        u = u_src.read(1, masked=True).filled(np.nan).astype(float)
+        v = v_src.read(1, masked=True).filled(np.nan).astype(float)
+        height, width = u_src.height, u_src.width
+        cols = np.arange(width)
+        rows = np.arange(height)
+        lon = np.asarray(xy(u_src.transform, np.zeros(width, dtype=int), cols, offset="center")[0], dtype=float)
+        lat = np.asarray(xy(u_src.transform, rows, np.zeros(height, dtype=int), offset="center")[1], dtype=float)
+
+    u, v = _convert_current_units(lon=lon, lat=lat, u=u, v=v, input_units=input_units)
+    return CurrentField(lon=lon, lat=lat, u=u, v=v)
+
+
 def current_field_from_netcdf(
     nc_path: Path,
     *,
@@ -98,13 +152,7 @@ def current_field_from_netcdf(
     u = u_slice.values.astype(float)
     v = v_slice.values.astype(float)
 
-    if input_units == "m/s":
-        m_per_deg_lat = 111_320.0
-        lat_rad = np.deg2rad(lat)
-        m_per_deg_lon = np.maximum(1e-6, m_per_deg_lat * np.cos(lat_rad))
-
-        v = v * 3600.0 / m_per_deg_lat
-        u = u * 3600.0 / m_per_deg_lon[:, None]
+    u, v = _convert_current_units(lon=lon, lat=lat, u=u, v=v, input_units=input_units)
 
     ds.close()
     return CurrentField(lon=lon, lat=lat, u=u, v=v)
