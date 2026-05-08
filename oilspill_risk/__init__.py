@@ -18,7 +18,7 @@ from .hotspots import HotspotConfig, RunOptions, run_hotspot_extraction
 from .gridding import export_oscar_uv_geotiff, standardize_oscar_uv_netcdf
 from .models import OscarDownloadConfig, StudyArea, infer_study_area_from_hotspots, validate_study_area
 from .oscar_workflow import download_oscar_for_periods, extract_data_date, raw_oscar_files
-from .periods import seasonal_periods
+from .periods import analysis_periods, seasonal_periods
 from .podaac import build_podaac_downloader_cmd, run_podaac_downloader, write_earthdata_netrc
 from .trajectory import (
     CoastalRiskResult,
@@ -47,6 +47,7 @@ __all__ = [
     "SimulationConfig",
     "StudyArea",
     "aggregate_exposure_probabilities",
+    "analysis_periods",
     "aggregate_exposure_probabilities_by_period",
     "aggregate_exposure_probabilities_for_periods",
     "build_podaac_downloader_cmd",

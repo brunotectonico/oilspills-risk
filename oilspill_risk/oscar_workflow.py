@@ -73,7 +73,7 @@ def download_oscar_for_periods(
 
     Returned paths are period-scoped and include already-present files that match
     the requested dates. In standardize mode, each derived NetCDF filename embeds
-    the ``period_id`` from ``seasonal_periods()`` before its data date, and each
+    the ``period_id`` from ``analysis_periods()``/``seasonal_periods()`` before its data date, and each
     raw file contributes its standardized NetCDF plus the paired U/V GeoTIFF
     outputs. Duplicate paths are removed while preserving processing order.
     """

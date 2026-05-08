@@ -14,11 +14,11 @@ from rasterio.transform import from_origin
 from .coastlines import CoastPointSet
 from .trajectory import CurrentField, current_field_from_geotiff, current_field_from_netcdf
 
-PERIOD_ID_PATTERN = re.compile(r"_(\S\d+)_*")
+PERIOD_ID_PATTERN = re.compile(r"_(\S\d+)_*|([DMSY]\d{1,4})_*")
 
 
 def extract_period_id_from_path(path: Path | str) -> str | None:
-    """Extract a seasonal_periods-style period id from an output filename."""
+    """Extract a seasonal_periods/analysis_periods period id from a filename."""
     match = PERIOD_ID_PATTERN.search(Path(path).name)
     return match.group(1) if match else None
 
@@ -190,7 +190,7 @@ def aggregate_exposure_probabilities(
     *,
     period_id: str | None = None,
 ) -> CoastwardExposureResult:
-    """Average daily exposure results for one seasonal_periods period."""
+    """Average exposure results for one analysis_periods/seasonal_periods label."""
     if not results:
         raise ValueError("At least one exposure result is required")
 
@@ -226,7 +226,7 @@ def aggregate_exposure_probabilities(
 def aggregate_exposure_probabilities_by_period(
     results: list[CoastwardExposureResult],
 ) -> dict[str, CoastwardExposureResult]:
-    """Group and average exposure results by their seasonal_periods period id."""
+    """Group and average exposure results by repeating period id."""
     grouped: dict[str, list[CoastwardExposureResult]] = {}
     for result in results:
         if result.period_id is None:
@@ -243,7 +243,7 @@ def aggregate_exposure_probabilities_for_periods(
     results: list[CoastwardExposureResult],
     periods: list[tuple[date, date, str]],
 ) -> dict[str, CoastwardExposureResult]:
-    """Aggregate exposure results in the order returned by seasonal_periods()."""
+    """Aggregate exposure results in the order returned by analysis_periods()."""
     by_period = aggregate_exposure_probabilities_by_period(results)
     return {
         period_id: by_period[period_id]
