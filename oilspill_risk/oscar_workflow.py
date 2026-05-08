@@ -49,9 +49,9 @@ def _raw_files_for_period(output_dir: Path, period_start: date, period_end: date
     return sorted(period_files, key=lambda path: (extract_data_date(path), path.name))
 
 
-def _period_suffix(period_id: str) -> str:
-    """Return a filename-safe period suffix from analysis_periods output."""
-    return re.sub(r"[^A-Za-z0-9_-]+", "_", period_id).strip("_")
+# def _period_suffix(period_id: str) -> str:
+#     """Return a filename-safe period suffix from seasonal_periods output."""
+#     return re.sub(r"[^A-Za-z0-9_-]+", "_", period_id).strip("_")
 
 
 def _append_unique(paths: list[Path], seen: set[Path], path: Path) -> None:
@@ -77,6 +77,11 @@ def download_oscar_for_periods(
     raw file contributes its standardized NetCDF plus the paired U/V GeoTIFF
     outputs. Duplicate paths are removed while preserving processing order.
     """
+    raw_output_dir = cfg.output_dir / "raw_oscar_files"
+    raw_output_dir.mkdir(parents=True, exist_ok=True)
+    final_dir = cfg.output_dir / "oscar_files_ready"
+    final_dir.mkdir(parents=True, exist_ok=True)
+    
     outputs: list[Path] = []
     seen_outputs: set[Path] = set()
     name_suffix = "uv_std"
@@ -87,16 +92,16 @@ def download_oscar_for_periods(
     for period_start, period_end, period_id in periods:
         run_podaac_downloader(
             collection=cfg.podaac_collection,
-            output_dir=cfg.output_dir,
+            output_dir=raw_output_dir,
             start_date=period_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
             end_date=period_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
             bbox=None if standardize else area,
             dry_run=False,
         )
 
-        period_raw = _raw_files_for_period(cfg.output_dir, period_start, period_end)
+        period_raw = _raw_files_for_period(raw_output_dir, period_start, period_end)
         if not period_raw:
-            raise FileNotFoundError(f"No raw OSCAR files found for period {period_id} in {cfg.output_dir}")
+            raise FileNotFoundError(f"No raw OSCAR files found for period {period_id} in {raw_output_dir}")
 
         for raw_file in period_raw:
             if not standardize:
@@ -104,18 +109,25 @@ def download_oscar_for_periods(
                 continue
 
             data_date = extract_data_date(raw_file)
-            output_nc = cfg.output_dir / f"oscar_{name_suffix}_{_period_suffix(period_id)}_{data_date}.nc"
+            output_nc = final_dir / f"oscar_{name_suffix}_{period_id}_{data_date}.nc"#{_period_suffix(period_id)}_{data_date}.nc"
             if not output_nc.exists():
                 standardize_oscar_uv_netcdf(raw_file, output_nc, area, u_var=cfg.u_var, v_var=cfg.v_var)
             _append_unique(outputs, seen_outputs, output_nc)
 
-            u_tif = cfg.output_dir / f"{output_nc.stem}_{cfg.u_var}.tif"
-            v_tif = cfg.output_dir / f"{output_nc.stem}_{cfg.v_var}.tif"
+            u_tif = final_dir / f"{output_nc.stem}_{cfg.u_var}.tif"
+            v_tif = final_dir / f"{output_nc.stem}_{cfg.v_var}.tif"
             if not u_tif.exists() or not v_tif.exists():
                 u_tif, v_tif = export_oscar_uv_geotiff(
-                    output_nc, cfg.output_dir, area, u_var=cfg.u_var, v_var=cfg.v_var
+                    output_nc, final_dir, area, u_var=cfg.u_var, v_var=cfg.v_var
                 )
             _append_unique(outputs, seen_outputs, u_tif)
             _append_unique(outputs, seen_outputs, v_tif)
+            #Cleaning raw files
+            if output_nc.exists():
+             try:
+                 raw_file.unlink() # deleting file: _final_{data_date}.nc
+                 # print(f"Deleted: {raw_file.name}")
+             except Exception as e:
+                 print(f"{raw_file} could not be deleted: {e}")
 
     return outputs
