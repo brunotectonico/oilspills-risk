@@ -45,6 +45,10 @@ This repository provides a modular coastal oil-spill risk screening workflow for
   Separate mean-density raster aggregation module.
 - `oilspill_risk/trajectory.py`
   Reusable trajectory simulation and coastal risk scoring primitives.
+- `oilspill_risk/coastlines.py`
+  Coastline shapefile/GeoPackage reading and point sampling utilities.
+- `oilspill_risk/exposure.py`
+  Grid-based coastward current exposure probability and GeoTIFF outputs.
 - `oilspill_risk/mapping.py`
   Cartography helpers for currents, coastlines, and traffic-density hotspots.
 - `oilspill_risk/models.py`
@@ -80,6 +84,15 @@ python density_hotspots.py /path/to/gmtds_data \
   --season-start-month 1 \
   --season-length-months 3
 ```
+
+### Expected GMTDS input filename patterns
+
+The hotspot CLI expects one ZIP archive per analyzed year and one or more monthly GeoTIFFs inside each ZIP. Year and month are parsed from filenames before the raster is read:
+
+- ZIP archive names must contain an underscore followed by a 4-digit year, for example `GMTDS_Tankers_2020.zip` or `GMTDS_2020_Tankers.zip`.
+- GeoTIFF member names inside each ZIP must contain an underscore, a 2-digit month, and another underscore, for example `GMTDS_Tankers_01_density.tif` for January.
+- The default CLI pattern is `*Tankers.zip`; use `--pattern` if your archive names differ while still following the year parsing rule.
+- Files that do not match these patterns raise a parsing error. During batch ZIP processing, errors are logged with the offending TIFF/ZIP name and processing continues with the next monthly raster.
 
 ## Secure Earthdata auth with PO.DAAC downloader
 
@@ -166,11 +179,113 @@ ax, mesh, quiver = plot_current_orientation_intensity(
 plot_hotspots(Path("gmtds_tanker_hotspots_multi.csv"), ax=ax, density_col="mean_density")
 ```
 
+To plot directly from a standardized NetCDF current file instead of paired GeoTIFFs, pass `nc_path` and any NetCDF loader options through the same helper:
+
+```python
+ax, mesh, quiver = plot_current_orientation_intensity(
+    nc_path=Path("files/oscar_uv_clip_20200101.nc"),
+    time_index=0,  # omit to average over time by default
+    stride=3,
+)
+plot_hotspots(Path("gmtds_tanker_hotspots_multi.csv"), ax=ax, density_col="mean_density")
+```
+
 Cartopy coastlines can be added with `add_cartopy_coastlines(ax)`. Cartopy is optional and only required when that coastline helper is called.
 
-### Trajectory expansion and period aggregation approach
+## Coastward current exposure maps
 
-Probabilistic workflow works in three stages:
-1. aggregates OSCAR currents by the target period (`monthly`, `seasonal`, or another period id);
-2. for each hotspot/event, uses the hotspot density as the source weight and simulate particle expansion with the period current field;
-3. combines all individual event outputs by averaging or summing weighted particle/coastal-hit probabilities per period, then average periods only after keeping their period ids explicit.
+The grid-based exposure workflow estimates where daily OSCAR current vectors point toward coastlines or user-selected coastal target segments. This is a current-direction screening layer, separate from the particle trajectory functions that remain available for later source-based simulations.
+
+The workflow is:
+
+1. load standardized daily currents from NetCDF or paired U/V GeoTIFFs into a `CurrentField`;
+2. read a coastline Shapefile/GeoPackage and sample line, polygon-boundary, or point geometries into coastline points;
+3. optionally keep only selected coastline segments via an attribute column;
+4. for every current-grid pixel, find the nearest sampled coast/target point;
+5. compare the local current vector with the pixel-to-coast vector;
+6. compute a daily probability layer from `max(0, cos(theta))`, optionally weighted by current speed and distance decay;
+7. average daily probability layers into monthly or seasonal products according to the user-selected period.
+
+```python
+from pathlib import Path
+from oilspill_risk.coastlines import coast_points_from_shapefile
+from oilspill_risk.exposure import (
+    aggregate_exposure_probabilities_for_periods,
+    exposure_from_netcdf,
+    write_exposure_geotiff,
+)
+from oilspill_risk.periods import analysis_periods
+
+periods = analysis_periods(
+    "2020-01-01T00:00:00Z",
+    "2021-12-31T23:59:59Z",
+    frequency="monthly",
+)
+
+coast_points = coast_points_from_shapefile(
+    Path("coast/coastline.shp"),
+    spacing=0.01,  # decimal degrees when working with EPSG:4326 OSCAR grids
+    target_crs="EPSG:4326",
+    segment_id_col="segment_id",
+    selected_segments={"djibouti", "yemen"},
+)
+
+period_ids = dict.fromkeys(period_id for _, _, period_id in periods)
+daily_results = [
+    exposure_from_netcdf(
+        nc_path,
+        coast_points,
+        alpha=2.0,
+        include_speed=True,
+        current_kwargs={"input_units": "m/s"},
+    )
+    for period_id in period_ids
+    for nc_path in sorted(Path("files").glob(f"oscar_uv_std_clip_{period_id}_*.nc"))
+]
+period_results = aggregate_exposure_probabilities_for_periods(daily_results, periods)
+for period_id, result in period_results.items():
+    write_exposure_geotiff(result, Path(f"outputs/coastward_probability_{period_id}.tif"))
+```
+
+Use the same coordinate reference system for coast points and current-grid coordinates. With the current OSCAR lon/lat workflow, `target_crs="EPSG:4326"` means `spacing` is interpreted in decimal degrees. `analysis_periods(...)` can build `daily`, `monthly`, `seasonal`, or `yearly` windows; labels repeat across years (`M01` for all Januaries, `S1` for every first seasonal window, `Y1` for each yearly window). Standardized OSCAR outputs from `download_oscar_for_periods(..., standardize=True)` include these period IDs in their filenames, so exposure results can infer the suffix and `aggregate_exposure_probabilities_for_periods(...)` averages all matching period labels together. Combining these exposure maps with GMTDS traffic density is intentionally left for a later step.
+
+## Trajectory and spill-risk analysis logic
+
+`HotspotSource` is the bridge between the traffic-density workflow and the spill-trajectory workflow: it stores a candidate spill origin (`lon`, `lat`), its traffic-derived `density_weight`, and a stable `hotspot_id`. Use `hotspot_sources_from_records(...)` to convert a hotspot CSV or table into these source objects. The optional `mean_density_min` filter keeps only hotspots whose selected density column is high enough to be treated as potential spill sources.
+
+```python
+import numpy as np
+from pathlib import Path
+from oilspill_risk.trajectory import (
+    SimulationConfig,
+    current_field_from_netcdf,
+    estimate_coastal_risk_for_sources,
+    hotspot_sources_from_records,
+)
+
+sources = hotspot_sources_from_records(
+    Path("gmtds_tanker_hotspots_multi.csv"),
+    density_col="mean_density",
+    mean_density_min=100.0,  # choose after inspecting the density distribution
+)
+currents = current_field_from_netcdf(Path("files/oscar_uv_clip_20200101.nc"))
+coast_points = np.array([
+    [43.0, 11.5],
+    [43.1, 11.6],
+])
+risk_rows = estimate_coastal_risk_for_sources(
+    sources=sources,
+    currents=currents,
+    coast_points=coast_points,
+    cfg=SimulationConfig(),
+)
+```
+
+The current probabilistic workflow works in these stages:
+
+1. extract GMTDS hotspot candidates and keep the `period_id`, `mean_density`, and hotspot coordinates explicit;
+2. filter hotspot candidates into `HotspotSource` objects with a documented density threshold such as `mean_density_min`;
+3. aggregate or select OSCAR currents for the matching period, loading them from NetCDF or paired GeoTIFFs into `CurrentField`;
+4. simulate particles from each source with advection, random-walk diffusion, and simplified weathering;
+5. score each source as `density_weight × coastal_hit_fraction × survival_fraction`;
+6. combine event-level scores by period, and only average across periods after keeping period IDs explicit.

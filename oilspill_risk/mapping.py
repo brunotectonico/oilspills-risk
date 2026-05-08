@@ -82,7 +82,10 @@ def plot_current_orientation_intensity(
 ) -> tuple[Any, Any, Any]:
     """Plot current intensity as color and orientation as vectors.
 
-    Returns ``(ax, mesh, quiver)`` so callers can further customize the map.
+    Currents can be passed directly, loaded from paired GeoTIFFs, or loaded
+    from NetCDF by passing ``nc_path`` plus any NetCDF loader options such as
+    ``time_index`` or ``average_over_time``. Returns ``(ax, mesh, quiver)`` so
+    callers can further customize the map.
     """
     if currents is None:
         currents = load_current_field(
@@ -128,6 +131,14 @@ def plot_current_orientation_intensity(
         add_cartopy_coastlines(ax=ax, resolution=coastline_resolution)
         
     return ax, mesh, quiver
+
+
+def plot_current_orientation_intensity_from_netcdf(
+    nc_path: Path,
+    **plot_kwargs: Any,
+) -> tuple[Any, Any, Any]:
+    """Convenience wrapper to map current intensity/orientation directly from NetCDF."""
+    return plot_current_orientation_intensity(nc_path=nc_path, **plot_kwargs)
 
 
 def _hotspots_to_arrays(

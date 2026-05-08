@@ -14,9 +14,11 @@ def write_earthdata_netrc(netrc_path: Path, username: str, password: str) -> Pat
     """Write Earthdata credentials to a netrc file with restricted permissions."""
     netrc_path.parent.mkdir(parents=True, exist_ok=True)
     netrc_path.write_text(
-        "machine urs.earthdata.nasa.gov"
-        f"  login {username}"
-        f"  password {password}",
+        (
+            "machine urs.earthdata.nasa.gov\n"
+            f"  login {username}\n"
+            f"  password {password}\n"
+        ),
         encoding="utf-8",
     )
     netrc_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
@@ -73,7 +75,7 @@ def run_podaac_downloader(
 
     env = os.environ.copy()
     if username and password:
-        resolved_netrc = netrc_path or (Path.home() / (".netrc" if os.name == "nt" else "_netrc")) #Some windows versions use _netrc
+        resolved_netrc = netrc_path or (Path.home() / ("_netrc" if os.name == "nt" else ".netrc"))
         write_earthdata_netrc(resolved_netrc, username, password)
         env["NETRC"] = str(resolved_netrc)
 
@@ -87,9 +89,9 @@ def run_podaac_downloader(
         limit=limit,
         dry_run=dry_run,
     )
-    try: # to handle errors in download
+    try:
         return subprocess.run(cmd, check=True, text=True, capture_output=True, env=env)
     except subprocess.CalledProcessError as e:
         print(f"Error: {e.stdout}")
-        print(f"Details: {e.stderr}") 
+        print(f"Details: {e.stderr}")
         raise
