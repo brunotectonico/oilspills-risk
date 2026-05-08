@@ -14,13 +14,13 @@ from rasterio.transform import from_origin
 from .coastlines import CoastPointSet
 from .trajectory import CurrentField, current_field_from_geotiff, current_field_from_netcdf
 
-PERIOD_ID_PATTERN = re.compile(r"S\d+_\d{6}_\d{6}")
+PERIOD_ID_PATTERN = re.compile(r"_(\S\d+)_*")
 
 
 def extract_period_id_from_path(path: Path | str) -> str | None:
     """Extract a seasonal_periods-style period id from an output filename."""
     match = PERIOD_ID_PATTERN.search(Path(path).name)
-    return match.group(0) if match else None
+    return match.group(1) if match else None
 
 
 @dataclass(frozen=True)

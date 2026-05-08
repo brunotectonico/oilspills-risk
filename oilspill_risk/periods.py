@@ -45,7 +45,7 @@ def seasonal_periods(
             break
 
         if period_start >= s_date and period_end <= e_date:
-            period_id = f"S{window_idx}_{period_start:%Y%m}_{period_end:%Y%m}"
+            period_id = f"S{window_idx}"#_{period_start:%Y%m}_{period_end:%Y%m}"
             periods.append((period_start, period_end, period_id))
             window_idx += 1
         else:
