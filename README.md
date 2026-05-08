@@ -210,9 +210,16 @@ The workflow is:
 from pathlib import Path
 from oilspill_risk.coastlines import coast_points_from_shapefile
 from oilspill_risk.exposure import (
-    aggregate_exposure_probabilities,
+    aggregate_exposure_probabilities_for_periods,
     exposure_from_netcdf,
     write_exposure_geotiff,
+)
+from oilspill_risk.periods import seasonal_periods
+
+periods = seasonal_periods(
+    "2020-01-01T00:00:00Z",
+    "2020-03-31T23:59:59Z",
+    season_length_months=1,
 )
 
 coast_points = coast_points_from_shapefile(
@@ -231,13 +238,15 @@ daily_results = [
         include_speed=True,
         current_kwargs={"input_units": "m/s"},
     )
-    for nc_path in sorted(Path("files").glob("oscar_uv_std_clip_202001*.nc"))
+    for _, _, period_id in periods
+    for nc_path in sorted(Path("files").glob(f"oscar_uv_std_clip_{period_id}_*.nc"))
 ]
-monthly_result = aggregate_exposure_probabilities(daily_results)
-write_exposure_geotiff(monthly_result, Path("outputs/coastward_probability_2020_01.tif"))
+period_results = aggregate_exposure_probabilities_for_periods(daily_results, periods)
+for period_id, result in period_results.items():
+    write_exposure_geotiff(result, Path(f"outputs/coastward_probability_{period_id}.tif"))
 ```
 
-Use the same coordinate reference system for coast points and current-grid coordinates. With the current OSCAR lon/lat workflow, `target_crs="EPSG:4326"` means `spacing` is interpreted in decimal degrees. Combining these exposure maps with GMTDS traffic density is intentionally left for a later step.
+Use the same coordinate reference system for coast points and current-grid coordinates. With the current OSCAR lon/lat workflow, `target_crs="EPSG:4326"` means `spacing` is interpreted in decimal degrees. Standardized OSCAR outputs from `download_oscar_for_periods(..., standardize=True)` include the `period_id` returned by `seasonal_periods()` in their filenames, so exposure results can infer the period suffix and aggregate with `aggregate_exposure_probabilities_for_periods(...)`. Combining these exposure maps with GMTDS traffic density is intentionally left for a later step.
 
 ## Trajectory and spill-risk analysis logic
 

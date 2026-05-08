@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +13,14 @@ from rasterio.transform import from_origin
 
 from .coastlines import CoastPointSet
 from .trajectory import CurrentField, current_field_from_geotiff, current_field_from_netcdf
+
+PERIOD_ID_PATTERN = re.compile(r"S\d+_\d{6}_\d{6}")
+
+
+def extract_period_id_from_path(path: Path | str) -> str | None:
+    """Extract a seasonal_periods-style period id from an output filename."""
+    match = PERIOD_ID_PATTERN.search(Path(path).name)
+    return match.group(0) if match else None
 
 
 @dataclass(frozen=True)
@@ -25,6 +35,7 @@ class CoastwardExposureResult:
     distance: np.ndarray
     nearest_coast_x: np.ndarray
     nearest_coast_y: np.ndarray
+    period_id: str | None = None
 
 
 def _grid_coordinates(currents: CurrentField) -> tuple[np.ndarray, np.ndarray]:
@@ -88,6 +99,7 @@ def coastward_exposure_probability(
     target_points: CoastPointSet | np.ndarray | None = None,
     metric_scaling: bool = True,
     chunk_size: int = 50_000,
+    period_id: str | None = None,
 ) -> CoastwardExposureResult:
     """Compute per-pixel probability that currents point toward coast/targets.
 
@@ -153,15 +165,44 @@ def coastward_exposure_probability(
         distance=coast_distance.astype("float32"),
         nearest_coast_x=nearest[..., 0].astype("float32"),
         nearest_coast_y=nearest[..., 1].astype("float32"),
+        period_id=period_id,
     )
+
+
+def _aggregate_period_id(
+    results: list[CoastwardExposureResult],
+    period_id: str | None,
+) -> str | None:
+    """Resolve the period id to attach to an aggregate result."""
+    if period_id is not None:
+        return period_id
+
+    period_ids = {result.period_id for result in results if result.period_id is not None}
+    if len(period_ids) > 1:
+        raise ValueError(
+            f"Cannot aggregate mixed periods without selecting one period_id: {sorted(period_ids)}"
+        )
+    return next(iter(period_ids), None)
 
 
 def aggregate_exposure_probabilities(
     results: list[CoastwardExposureResult],
+    *,
+    period_id: str | None = None,
 ) -> CoastwardExposureResult:
-    """Average multiple daily exposure results into one period result."""
+    """Average daily exposure results for one seasonal_periods period."""
     if not results:
         raise ValueError("At least one exposure result is required")
+
+    aggregate_period_id = _aggregate_period_id(results, period_id)
+    if aggregate_period_id is not None:
+        results = [
+            result
+            for result in results
+            if result.period_id in {None, aggregate_period_id}
+        ]
+        if not results:
+            raise ValueError(f"No exposure results found for period_id={aggregate_period_id!r}")
 
     first = results[0]
     probability = np.nanmean(np.stack([result.probability for result in results]), axis=0)
@@ -178,7 +219,37 @@ def aggregate_exposure_probabilities(
         distance=distance.astype("float32"),
         nearest_coast_x=first.nearest_coast_x,
         nearest_coast_y=first.nearest_coast_y,
+        period_id=aggregate_period_id,
     )
+
+
+def aggregate_exposure_probabilities_by_period(
+    results: list[CoastwardExposureResult],
+) -> dict[str, CoastwardExposureResult]:
+    """Group and average exposure results by their seasonal_periods period id."""
+    grouped: dict[str, list[CoastwardExposureResult]] = {}
+    for result in results:
+        if result.period_id is None:
+            raise ValueError("All exposure results must include period_id for grouped aggregation")
+        grouped.setdefault(result.period_id, []).append(result)
+
+    return {
+        period_id: aggregate_exposure_probabilities(period_results, period_id=period_id)
+        for period_id, period_results in sorted(grouped.items())
+    }
+
+
+def aggregate_exposure_probabilities_for_periods(
+    results: list[CoastwardExposureResult],
+    periods: list[tuple[date, date, str]],
+) -> dict[str, CoastwardExposureResult]:
+    """Aggregate exposure results in the order returned by seasonal_periods()."""
+    by_period = aggregate_exposure_probabilities_by_period(results)
+    return {
+        period_id: by_period[period_id]
+        for _, _, period_id in periods
+        if period_id in by_period
+    }
 
 
 def _cell_size(values: np.ndarray) -> float:
@@ -229,8 +300,9 @@ def exposure_from_netcdf(
     **kwargs,
 ) -> CoastwardExposureResult:
     """Load a NetCDF current field and compute coastward exposure."""
+    period_id = kwargs.pop("period_id", extract_period_id_from_path(nc_path))
     currents = current_field_from_netcdf(nc_path, **kwargs.pop("current_kwargs", {}))
-    return coastward_exposure_probability(currents, coast_points, **kwargs)
+    return coastward_exposure_probability(currents, coast_points, period_id=period_id, **kwargs)
 
 
 def exposure_from_geotiff(
@@ -240,5 +312,6 @@ def exposure_from_geotiff(
     **kwargs,
 ) -> CoastwardExposureResult:
     """Load paired U/V GeoTIFFs and compute coastward exposure."""
+    period_id = kwargs.pop("period_id", extract_period_id_from_path(u_tif))
     currents = current_field_from_geotiff(u_tif, v_tif, **kwargs.pop("current_kwargs", {}))
-    return coastward_exposure_probability(currents, coast_points, **kwargs)
+    return coastward_exposure_probability(currents, coast_points, period_id=period_id, **kwargs)

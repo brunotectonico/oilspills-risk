@@ -49,6 +49,11 @@ def _raw_files_for_period(output_dir: Path, period_start: date, period_end: date
     return sorted(period_files, key=lambda path: (extract_data_date(path), path.name))
 
 
+def _period_suffix(period_id: str) -> str:
+    """Return a filename-safe period suffix from seasonal_periods output."""
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", period_id).strip("_")
+
+
 def _append_unique(paths: list[Path], seen: set[Path], path: Path) -> None:
     """Append a resolved path once while preserving insertion order."""
     resolved = path.resolve()
@@ -67,9 +72,10 @@ def download_oscar_for_periods(
     """Download OSCAR files for date periods and optionally clip/standardize each one.
 
     Returned paths are period-scoped and include already-present files that match
-    the requested dates. In standardize mode, each raw file contributes its
-    standardized NetCDF plus the paired U/V GeoTIFF outputs, with duplicate paths
-    removed while preserving processing order.
+    the requested dates. In standardize mode, each derived NetCDF filename embeds
+    the ``period_id`` from ``seasonal_periods()`` before its data date, and each
+    raw file contributes its standardized NetCDF plus the paired U/V GeoTIFF
+    outputs. Duplicate paths are removed while preserving processing order.
     """
     outputs: list[Path] = []
     seen_outputs: set[Path] = set()
@@ -98,7 +104,7 @@ def download_oscar_for_periods(
                 continue
 
             data_date = extract_data_date(raw_file)
-            output_nc = cfg.output_dir / f"oscar_{name_suffix}_{data_date}.nc"
+            output_nc = cfg.output_dir / f"oscar_{name_suffix}_{_period_suffix(period_id)}_{data_date}.nc"
             if not output_nc.exists():
                 standardize_oscar_uv_netcdf(raw_file, output_nc, area, u_var=cfg.u_var, v_var=cfg.v_var)
             _append_unique(outputs, seen_outputs, output_nc)
