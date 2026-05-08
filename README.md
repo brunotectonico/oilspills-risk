@@ -97,6 +97,7 @@ The hotspot CLI expects one ZIP archive per analyzed year and one or more monthl
 ## Secure Earthdata auth with PO.DAAC downloader
 
 For the `podaac-data-downloader` mode (from `podaac/data-subscriber`), avoid hardcoding credentials in scripts.
+Consider Oscar V2, 0.25 degrees is available from 1993-Jan-01 to 2022-Aug-05.
 
 Recommended pattern:
 - Set environment variables `EARTHDATA_USERNAME` and `EARTHDATA_PASSWORD` in your shell/session.

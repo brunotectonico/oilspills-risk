@@ -97,6 +97,7 @@ The hotspot CLI expects one ZIP archive per analyzed year and one or more monthl
 ## Secure Earthdata auth with PO.DAAC downloader
 
 For the `podaac-data-downloader` mode (from `podaac/data-subscriber`), avoid hardcoding credentials in scripts.
+Consider Oscar V2, 0.25 degrees is available from 1993-Jan-01 to 2022-Aug-05.
 
 Recommended pattern:
 - Set environment variables `EARTHDATA_USERNAME` and `EARTHDATA_PASSWORD` in your shell/session.
@@ -210,9 +211,16 @@ The workflow is:
 from pathlib import Path
 from oilspill_risk.coastlines import coast_points_from_shapefile
 from oilspill_risk.exposure import (
-    aggregate_exposure_probabilities,
+    aggregate_exposure_probabilities_for_periods,
     exposure_from_netcdf,
     write_exposure_geotiff,
+)
+from oilspill_risk.periods import analysis_periods
+
+periods = analysis_periods(
+    "2020-01-01T00:00:00Z",
+    "2021-12-31T23:59:59Z",
+    frequency="monthly",
 )
 
 coast_points = coast_points_from_shapefile(
@@ -223,6 +231,7 @@ coast_points = coast_points_from_shapefile(
     selected_segments={"djibouti", "yemen"},
 )
 
+period_ids = dict.fromkeys(period_id for _, _, period_id in periods)
 daily_results = [
     exposure_from_netcdf(
         nc_path,
@@ -231,13 +240,15 @@ daily_results = [
         include_speed=True,
         current_kwargs={"input_units": "m/s"},
     )
-    for nc_path in sorted(Path("files").glob("oscar_uv_std_clip_202001*.nc"))
+    for period_id in period_ids
+    for nc_path in sorted(Path("files").glob(f"oscar_uv_std_clip_{period_id}_*.nc"))
 ]
-monthly_result = aggregate_exposure_probabilities(daily_results)
-write_exposure_geotiff(monthly_result, Path("outputs/coastward_probability_2020_01.tif"))
+period_results = aggregate_exposure_probabilities_for_periods(daily_results, periods)
+for period_id, result in period_results.items():
+    write_exposure_geotiff(result, Path(f"outputs/coastward_probability_{period_id}.tif"))
 ```
 
-Use the same coordinate reference system for coast points and current-grid coordinates. With the current OSCAR lon/lat workflow, `target_crs="EPSG:4326"` means `spacing` is interpreted in decimal degrees. Combining these exposure maps with GMTDS traffic density is intentionally left for a later step.
+Use the same coordinate reference system for coast points and current-grid coordinates. With the current OSCAR lon/lat workflow, `target_crs="EPSG:4326"` means `spacing` is interpreted in decimal degrees. `analysis_periods(...)` can build `daily`, `monthly`, `seasonal`, or `yearly` windows; labels repeat across years (`M01` for all Januaries, `S1` for every first seasonal window, `Y1` for each yearly window). Standardized OSCAR outputs from `download_oscar_for_periods(..., standardize=True)` include these period IDs in their filenames, so exposure results can infer the suffix and `aggregate_exposure_probabilities_for_periods(...)` averages all matching period labels together. Combining these exposure maps with GMTDS traffic density is intentionally left for a later step.
 
 ## Trajectory and spill-risk analysis logic
 
